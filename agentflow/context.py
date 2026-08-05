@@ -91,6 +91,22 @@ def _fanout_has_output(member: dict[str, Any]) -> bool:
     return isinstance(output, str) and bool(output.strip())
 
 
+def _dedup_preserving_order(values: list[Any]) -> list[Any]:
+    """Drop duplicate values (compared stripped for strings), keeping first occurrence."""
+    seen: set[Any] = set()
+    unique: list[Any] = []
+    for value in values:
+        key = value.strip() if isinstance(value, str) else value
+        try:
+            if key in seen:
+                continue
+            seen.add(key)
+        except TypeError:
+            pass
+        unique.append(value)
+    return unique
+
+
 def _fanout_context(member_nodes: list[dict[str, Any]]) -> dict[str, Any]:
     subset_context = _fanout_subset_context(member_nodes)
     status_counts = {status.value: 0 for status in NodeStatus}
@@ -99,13 +115,19 @@ def _fanout_context(member_nodes: list[dict[str, Any]]) -> dict[str, Any]:
 
     with_output_nodes = [member for member in member_nodes if _fanout_has_output(member)]
     without_output_nodes = [member for member in member_nodes if not _fanout_has_output(member)]
+    unique_outputs = _dedup_preserving_order(subset_context["outputs"])
+    unique_final_responses = _dedup_preserving_order(subset_context["final_responses"])
     fanout_context = {
         **subset_context,
         "status_counts": status_counts,
+        "unique_outputs": unique_outputs,
+        "unique_final_responses": unique_final_responses,
         "summary": {
             "total": len(member_nodes),
             "with_output": len(with_output_nodes),
             "without_output": len(without_output_nodes),
+            "unique_outputs": len([output for output in unique_outputs if isinstance(output, str) and output.strip()]),
+            "duplicate_outputs": len(subset_context["outputs"]) - len(unique_outputs),
             **status_counts,
         },
         "with_output": _fanout_subset_context(with_output_nodes),

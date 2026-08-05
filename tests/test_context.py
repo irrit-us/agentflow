@@ -490,3 +490,21 @@ def test_render_node_prompt_truncates_fanout_scope_outputs(tmp_path):
     assert "y" * 60 not in prompt
     assert "truncated to 20 of 60 chars" in prompt
     assert any(entry["node_id"] == "worker_1" for entry in truncation_log)
+
+
+def test_fanout_context_deduplicates_member_outputs(tmp_path):
+    pipeline = _fanout_pipeline(tmp_path)
+    results = {
+        "worker_0": NodeResult(node_id="worker_0", status=NodeStatus.COMPLETED, output="same bug", final_response="same bug"),
+        "worker_1": NodeResult(node_id="worker_1", status=NodeStatus.COMPLETED, output=" same bug ", final_response="same bug"),
+        "worker_2": NodeResult(node_id="worker_2", status=NodeStatus.COMPLETED, output="another bug", final_response="another bug"),
+    }
+
+    context = build_render_context(pipeline, results)
+    fanout = context["fanouts"]["worker"]
+
+    assert fanout["outputs"] == ["same bug", " same bug ", "another bug"]
+    assert fanout["unique_outputs"] == ["same bug", "another bug"]
+    assert fanout["unique_final_responses"] == ["same bug", "another bug"]
+    assert fanout["summary"]["duplicate_outputs"] == 1
+    assert fanout["summary"]["unique_outputs"] == 2
