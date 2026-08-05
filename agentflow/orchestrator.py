@@ -1435,6 +1435,19 @@ class Orchestrator:
                 record.nodes[node_id].finished_at = utcnow_iso()
                 remaining.remove(node_id)
                 await self._publish(run_id, "node_skipped", node_id=node_id, reason="upstream_failure")
+            guard_blocked = [
+                node_id
+                for node_id in list(remaining)
+                if any(
+                    record.nodes[dependency].status in {NodeStatus.COMPLETED, NodeStatus.SKIPPED, NodeStatus.CANCELLED}
+                    for dependency in node_map[node_id].depends_on_failure
+                )
+            ]
+            for node_id in guard_blocked:
+                record.nodes[node_id].status = NodeStatus.SKIPPED
+                record.nodes[node_id].finished_at = utcnow_iso()
+                remaining.remove(node_id)
+                await self._publish(run_id, "node_skipped", node_id=node_id, reason="failure_guard_not_met")
             for node_id in list(remaining):
                 node = node_map[node_id]
                 if node.schedule is None:
@@ -1462,6 +1475,9 @@ class Orchestrator:
                     if not all(record.nodes[dep].status in terminal for dep in node.depends_on):
                         continue
                 elif not all(record.nodes[dep].status == NodeStatus.COMPLETED for dep in node.depends_on):
+                    continue
+                # Failure-guarded edges only fire when the dependency FAILED.
+                if not all(record.nodes[dep].status == NodeStatus.FAILED for dep in node.depends_on_failure):
                     continue
                 if node.schedule is None:
                     ready.append(node_id)
@@ -1605,10 +1621,21 @@ class Orchestrator:
 
         if record.status == RunStatus.CANCELLING or self._should_cancel(run_id):
             record.status = RunStatus.CANCELLED
-        elif any(node.status == NodeStatus.FAILED for node in record.nodes.values()):
-            record.status = RunStatus.FAILED
         else:
-            record.status = RunStatus.COMPLETED
+            # A failed node with an outgoing failure-guarded edge is "handled"
+            # by its guard branch and does not fail the run by itself.
+            handled_failures = {
+                dependency
+                for node in pipeline.nodes
+                for dependency in node.depends_on_failure
+            }
+            if any(
+                node.status == NodeStatus.FAILED and node.node_id not in handled_failures
+                for node in record.nodes.values()
+            ):
+                record.status = RunStatus.FAILED
+            else:
+                record.status = RunStatus.COMPLETED
         record.finished_at = utcnow_iso()
         await self._publish(run_id, "run_completed", status=record.status.value)
         await self.store.clear_cancel_request(run_id)

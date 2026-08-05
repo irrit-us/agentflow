@@ -156,6 +156,25 @@ with Graph("iterative", max_iterations=5) as g:
     review >> done               # exit on success
 ```
 
+## Guarded Edges (Conditional Branches)
+
+Use `on_ok` / `on_fail` to route to *different* nodes based on a node's outcome
+(unlike `on_failure`, which restarts the upstream nodes in a retry loop):
+
+```python
+with Graph("guarded") as g:
+    risky = codex(task_id="risky", prompt="Try the fast approach.")
+    fallback = codex(task_id="fallback", prompt="Slow fallback; risky ended: {{ nodes.risky.status }}")
+    report = codex(task_id="report", prompt="Report: {{ nodes.fallback.output }}{{ nodes.risky.output }}")
+
+    risky.on_fail >> fallback   # runs only when risky FAILS
+    risky.on_ok >> report       # same as `risky >> report` (success-guarded)
+    fallback >> report
+```
+
+A node whose failure is consumed by an `on_fail` branch does not fail the run.
+`depends_on_failure` is also available as a raw node field (JSON pipelines).
+
 ## Execution Targets
 
 ### Local (default)

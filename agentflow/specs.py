@@ -816,6 +816,7 @@ class NodeSpec(BaseModel):
     agent: AgentKind | str
     prompt: str
     depends_on: list[str] = Field(default_factory=list)
+    depends_on_failure: list[str] = Field(default_factory=list)
     on_failure_restart: list[str] = Field(default_factory=list)
     model: str | None = None
     provider: str | ProviderConfig | None = None
@@ -1576,12 +1577,12 @@ def _validate_well_formedness(pipeline: "PipelineSpec") -> None:
             unreferenced_edges.append(f"`{dependency}` -> `{node.id}`")
 
     # T-Conn: nodes unreachable from any source (in-degree 0) node.
-    sources = [node.id for node in pipeline.nodes if not node.depends_on]
+    sources = [node.id for node in pipeline.nodes if not node.depends_on and not node.depends_on_failure]
     reachable: set[str] = set()
     stack = list(sources)
     dependents: dict[str, list[str]] = {}
     for node in pipeline.nodes:
-        for dependency in node.depends_on:
+        for dependency in [*node.depends_on, *node.depends_on_failure]:
             dependents.setdefault(dependency, []).append(node.id)
     while stack:
         current = stack.pop()
@@ -1659,7 +1660,7 @@ class PipelineSpec(BaseModel):
         missing = {
             dependency
             for node in self.nodes
-            for dependency in node.depends_on
+            for dependency in [*node.depends_on, *node.depends_on_failure]
             if dependency not in ids
         }
         if missing:

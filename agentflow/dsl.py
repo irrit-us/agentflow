@@ -72,6 +72,36 @@ class _FailureEdge:
 
 
 @dataclass
+class _OkEdge:
+    """Proxy returned by ``node.on_ok`` for success-guarded edges."""
+
+    source: "NodeBuilder"
+
+    def __rshift__(self, target: "NodeBuilder | list[NodeBuilder]") -> "NodeBuilder | list[NodeBuilder]":
+        if isinstance(target, list):
+            for t in target:
+                t.depends_on.append(self.source.id)
+            return target
+        target.depends_on.append(self.source.id)
+        return target
+
+
+@dataclass
+class _FailEdge:
+    """Proxy returned by ``node.on_fail`` for failure-guarded edges."""
+
+    source: "NodeBuilder"
+
+    def __rshift__(self, target: "NodeBuilder | list[NodeBuilder]") -> "NodeBuilder | list[NodeBuilder]":
+        if isinstance(target, list):
+            for t in target:
+                t.kwargs.setdefault("depends_on_failure", []).append(self.source.id)
+            return target
+        target.kwargs.setdefault("depends_on_failure", []).append(self.source.id)
+        return target
+
+
+@dataclass
 class NodeBuilder:
     dag: "Graph"
     id: str
@@ -114,6 +144,16 @@ class NodeBuilder:
     def on_failure(self) -> _FailureEdge:
         """Return a proxy for ``node.on_failure >> target`` back-edges."""
         return _FailureEdge(source=self)
+
+    @property
+    def on_ok(self) -> _OkEdge:
+        """Return a proxy for ``node.on_ok >> target`` success-guarded edges."""
+        return _OkEdge(source=self)
+
+    @property
+    def on_fail(self) -> _FailEdge:
+        """Return a proxy for ``node.on_fail >> target`` failure-guarded edges."""
+        return _FailEdge(source=self)
 
     def to_spec(self) -> NodeSpec:
         return NodeSpec.model_validate(self.to_payload())
