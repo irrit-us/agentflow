@@ -196,69 +196,99 @@ class ECSRunner(Runner):
             raise RuntimeError(f"ECS run_task failed: {resp['failures']}")
         return resp["tasks"][0]["taskArn"]
 
-    def _wait_for_task(self, node: NodeSpec, task_arn: str) -> tuple[int, list[str], list[str]]:
+    async def _stream_task_logs(
+        self,
+        logs_client: object,
+        log_group: str,
+        seen_tokens: set[str],
+        stdout_lines: list[str],
+        on_output: StreamCallback,
+    ) -> None:
+        """Forward newly arrived CloudWatch log events to the output callback."""
+        try:
+            streams = await asyncio.to_thread(
+                logs_client.describe_log_streams,
+                logGroupName=log_group,
+                orderBy="LastEventTime",
+                limit=10,
+            )
+            for stream in streams.get("logStreams", []):
+                events = await asyncio.to_thread(
+                    logs_client.get_log_events,
+                    logGroupName=log_group,
+                    logStreamName=stream["logStreamName"],
+                    startFromHead=True,
+                )
+                for event in events.get("events", []):
+                    token = f"{stream['logStreamName']}:{event['timestamp']}:{event['message']}"
+                    if token in seen_tokens:
+                        continue
+                    seen_tokens.add(token)
+                    line = event["message"].rstrip()
+                    stdout_lines.append(line)
+                    await on_output("stdout", line)
+        except Exception:
+            pass
+
+    async def _wait_for_task(
+        self,
+        node: NodeSpec,
+        task_arn: str,
+        on_output: StreamCallback,
+        should_cancel: CancelCallback,
+    ) -> tuple[int, list[str], list[str], bool, bool]:
+        """Poll the task, streaming logs incrementally.
+
+        Honors cancellation (stops the task, exit 130) and the node timeout
+        (stops the task, exit 124). Returns
+        `(exit_code, stdout_lines, stderr_lines, timed_out, cancelled)`.
+        """
         import boto3
 
         target = node.target
-        ecs = boto3.client("ecs", region_name=target.region)
-        logs_client = boto3.client("logs", region_name=target.region)
+        ecs = await asyncio.to_thread(boto3.client, "ecs", region_name=target.region)
+        logs_client = await asyncio.to_thread(boto3.client, "logs", region_name=target.region)
         log_group = f"/agentflow/{node.id}"
 
         stdout_lines: list[str] = []
         seen_tokens: set[str] = set()
+        deadline = time.monotonic() + node.timeout_seconds if node.timeout_seconds else None
 
         while True:
-            resp = ecs.describe_tasks(cluster=target.cluster, tasks=[task_arn])
+            resp = await asyncio.to_thread(ecs.describe_tasks, cluster=target.cluster, tasks=[task_arn])
             task = resp["tasks"][0]
             status = task["lastStatus"]
 
-            # Stream logs
-            try:
-                streams = logs_client.describe_log_streams(
-                    logGroupName=log_group, orderBy="LastEventTime", limit=10,
-                ).get("logStreams", [])
-                for stream in streams:
-                    events = logs_client.get_log_events(
-                        logGroupName=log_group,
-                        logStreamName=stream["logStreamName"],
-                        startFromHead=True,
-                    ).get("events", [])
-                    for event in events:
-                        token = f"{stream['logStreamName']}:{event['timestamp']}:{event['message']}"
-                        if token not in seen_tokens:
-                            seen_tokens.add(token)
-                            stdout_lines.append(event["message"].rstrip())
-            except Exception:
-                pass
+            await self._stream_task_logs(logs_client, log_group, seen_tokens, stdout_lines, on_output)
 
             if status == "STOPPED":
-                # Wait for CloudWatch log propagation
-                time.sleep(5)
-                # Final log fetch
-                try:
-                    streams = logs_client.describe_log_streams(
-                        logGroupName=log_group, orderBy="LastEventTime", limit=10,
-                    ).get("logStreams", [])
-                    for stream in streams:
-                        events = logs_client.get_log_events(
-                            logGroupName=log_group,
-                            logStreamName=stream["logStreamName"],
-                            startFromHead=True,
-                        ).get("events", [])
-                        for event in events:
-                            token = f"{stream['logStreamName']}:{event['timestamp']}:{event['message']}"
-                            if token not in seen_tokens:
-                                seen_tokens.add(token)
-                                stdout_lines.append(event["message"].rstrip())
-                except Exception:
-                    pass
+                # Wait for CloudWatch log propagation, then fetch remaining logs.
+                await asyncio.sleep(5)
+                await self._stream_task_logs(logs_client, log_group, seen_tokens, stdout_lines, on_output)
                 container = task.get("containers", [{}])[0]
                 exit_code = container.get("exitCode", 1)
                 reason = container.get("reason", "")
                 stderr_lines = [reason] if reason else []
-                return exit_code, stdout_lines, stderr_lines
+                for line in stderr_lines:
+                    await on_output("stderr", line)
+                return exit_code, stdout_lines, stderr_lines, False, False
 
-            time.sleep(5)
+            if should_cancel():
+                await asyncio.to_thread(
+                    ecs.stop_task, cluster=target.cluster, task=task_arn, reason="cancelled by agentflow"
+                )
+                await on_output("stderr", "Cancelled")
+                return 130, stdout_lines, ["Cancelled"], False, True
+
+            if deadline is not None and time.monotonic() >= deadline:
+                await asyncio.to_thread(
+                    ecs.stop_task, cluster=target.cluster, task=task_arn, reason="agentflow node timeout"
+                )
+                message = f"Timed out after {node.timeout_seconds}s"
+                await on_output("stderr", message)
+                return 124, stdout_lines, [message], True, False
+
+            await asyncio.sleep(5)
 
     def plan_execution(
         self,
@@ -358,21 +388,16 @@ class ECSRunner(Runner):
             task_arn = await asyncio.to_thread(self._run_task, effective_node, task_def_arn)
             await on_output("stderr", f"Task {task_arn} started...")
 
-            exit_code, stdout_lines, stderr_lines = await asyncio.to_thread(
-                self._wait_for_task, node, task_arn,
+            exit_code, stdout_lines, stderr_lines, timed_out, cancelled = await self._wait_for_task(
+                node, task_arn, on_output, should_cancel,
             )
-
-            for line in stdout_lines:
-                await on_output("stdout", line)
-            for line in stderr_lines:
-                await on_output("stderr", line)
 
             return RawExecutionResult(
                 exit_code=exit_code,
                 stdout_lines=stdout_lines,
                 stderr_lines=stderr_lines,
-                timed_out=False,
-                cancelled=False,
+                timed_out=timed_out,
+                cancelled=cancelled,
             )
         except Exception as exc:
             return RawExecutionResult(
