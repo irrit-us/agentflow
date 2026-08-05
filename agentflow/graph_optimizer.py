@@ -9,7 +9,7 @@ from pprint import pformat
 from typing import Any
 
 from agentflow.loader import load_pipeline_from_data
-from agentflow.specs import PipelineSpec, RunRecord, normalize_agent_name
+from agentflow.specs import NodeStatus, PipelineSpec, RunRecord, RunStatus, normalize_agent_name
 from agentflow.store import RunStore
 from agentflow.utils import ensure_dir, json_dumps
 
@@ -250,3 +250,30 @@ def load_child_pipeline_from_path(path: Path) -> PipelineSpec:
     parsed["optimizer"] = None
     parsed["n_run"] = 1
     return load_pipeline_from_data(parsed, base_dir=path.parent)
+
+
+def compute_run_score(pipeline: PipelineSpec, record: RunRecord) -> float:
+    """Reduce a finished child run to a numeric score (paper Section 5.3)."""
+    spec = pipeline.score
+    kind = spec.kind if spec is not None else "status"
+    if kind == "status":
+        return 1.0 if record.status == RunStatus.COMPLETED else 0.0
+    if kind == "nodes_completed":
+        return float(sum(1 for node in record.nodes.values() if node.status == NodeStatus.COMPLETED))
+    command = (spec.command or "") if spec is not None else ""
+    try:
+        result = subprocess.run(
+            command,
+            shell=True,
+            cwd=str(pipeline.working_path),
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        output = result.stdout.strip()
+        try:
+            return float(output)
+        except ValueError:
+            return float(output.split()[-1])
+    except Exception:
+        return 0.0

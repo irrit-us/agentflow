@@ -817,6 +817,27 @@ class FeedbackChannelSpec(BaseModel):
         return self
 
 
+class ScoreSpec(BaseModel):
+    """How to reduce a finished child run to a numeric score (paper Section 5.3).
+
+    - `status`: 1.0 when the run completed, else 0.0 (default).
+    - `nodes_completed`: count of nodes that completed.
+    - `command`: run a shell command in the pipeline working directory and
+      parse a number from its stdout (e.g. unique sanitizer crash count).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["status", "nodes_completed", "command"] = "status"
+    command: str | None = None
+
+    @model_validator(mode="after")
+    def validate_score(self) -> "ScoreSpec":
+        if self.kind == "command" and not (self.command or "").strip():
+            raise ValueError("`score.command` is required when `score.kind` is `command`")
+        return self
+
+
 class PeriodicScheduleSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1658,6 +1679,7 @@ class PipelineSpec(BaseModel):
     max_template_value_chars: int | None = Field(default=None, gt=0)
     rate_limits: dict[str, int] = Field(default_factory=dict)
     feedback_channels: dict[str, FeedbackChannelSpec] = Field(default_factory=dict)
+    score: ScoreSpec | None = None
     node_defaults: dict[str, Any] | None = None
     agent_defaults: dict[str, dict[str, Any]] = Field(default_factory=dict)
     local_target_defaults: LocalTarget | None = None
@@ -1675,6 +1697,13 @@ class PipelineSpec(BaseModel):
         expanded = expand_compact_nodes(payload, base_dir=base_dir)
         expanded = apply_node_defaults(expanded)
         return apply_local_target_defaults(expanded)
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def validate_score_shorthand(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return {"kind": value}
+        return value
 
     @model_validator(mode="after")
     def validate_nodes(self) -> "PipelineSpec":

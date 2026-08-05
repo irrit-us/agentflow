@@ -30,6 +30,7 @@ from agentflow.graph_optimizer import (
     OPTIMIZER_RESULT_FILENAME,
     OPTIMIZER_VALIDATION_FILENAME,
     build_graph_report,
+    compute_run_score,
     copy_run_traces,
     load_child_pipeline_from_path,
     render_graph_optimizer_prompt,
@@ -380,6 +381,9 @@ class Orchestrator:
 
         current_pipeline = parent.pipeline
         final_child: RunRecord | None = None
+        best_score = 0.0
+        best_pipeline: PipelineSpec | None = None
+        round_scores: list[dict[str, object]] = []
 
         def _optimizer_failure_summary(
             label: str,
@@ -467,6 +471,29 @@ class Orchestrator:
                 copied_traces=copied_traces,
             )
             (round_dir / GRAPH_REPORT_FILENAME).write_text(json.dumps(graph_report, ensure_ascii=False, indent=2), encoding="utf-8")
+            await self.store.persist_run(parent_run_id)
+
+            # Score the round and keep the incumbent harness (paper Algorithm 1:
+            # H* updates only when the new score strictly exceeds the incumbent).
+            round_score = compute_run_score(current_pipeline, final_child)
+            round_scores.append(
+                {"round": round_number, "score": round_score, "child_run_id": final_child.id}
+            )
+            optimization_session["scores"] = round_scores
+            if round_score > best_score:
+                best_score = round_score
+                best_pipeline = current_pipeline
+                optimization_session["best_round"] = round_number
+                optimization_session["best_score"] = best_score
+            parent.optimization_session = optimization_session
+            await self._publish(
+                parent_run_id,
+                "optimization_round_scored",
+                round_number=round_number,
+                score=round_score,
+                best_score=best_score,
+                best_round=optimization_session.get("best_round"),
+            )
             await self.store.persist_run(parent_run_id)
 
             if round_number >= current_pipeline.n_run or self._should_cancel(parent_run_id):
@@ -588,16 +615,25 @@ class Orchestrator:
             )
             await self.store.persist_run(parent_run_id)
 
+        # The session result is the incumbent (best-scoring) harness, not
+        # necessarily the last one the optimizer produced.
+        if best_pipeline is not None:
+            best_pipeline_path = self.store.run_dir(parent_run_id) / "pipeline.best.py"
+            write_editable_pipeline_python(best_pipeline_path, best_pipeline)
+            optimization_session["best_pipeline_path"] = str(best_pipeline_path)
+            parent.optimization_session = optimization_session
+        parent.pipeline = best_pipeline or current_pipeline
+
         if self._should_cancel(parent_run_id):
             parent.status = RunStatus.CANCELLED
         elif final_child is None:
             parent.status = RunStatus.FAILED
         elif final_child.status == RunStatus.CANCELLED:
             parent.status = RunStatus.CANCELLED
-        elif final_child.status == RunStatus.FAILED:
-            parent.status = RunStatus.FAILED
-        else:
+        elif best_score > 0 or final_child.status == RunStatus.COMPLETED:
             parent.status = RunStatus.COMPLETED
+        else:
+            parent.status = RunStatus.FAILED
 
         parent.finished_at = utcnow_iso()
         await self._publish(parent_run_id, "run_completed", status=parent.status.value)

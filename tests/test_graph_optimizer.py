@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -19,8 +20,10 @@ from agentflow.graph_optimizer import (
     render_graph_optimizer_prompt,
     write_editable_pipeline_python,
 )
+from agentflow.agents.base import AgentAdapter
 from agentflow.loader import load_pipeline_from_path
-from agentflow.specs import PipelineSpec, RunStatus
+from agentflow.prepared import ExecutionPaths, PreparedExecution
+from agentflow.specs import NodeResult, NodeStatus, PipelineSpec, RunRecord, RunStatus
 from agentflow.tuned_agents import CommandExecution
 from tests.test_orchestrator import make_orchestrator
 
@@ -286,3 +289,134 @@ def test_orchestrator_normalizes_optimizer_edits_to_iteration_controls(tmp_path,
     assert completed.nodes["plan"].output == "round two"
     assert completed.optimization_session is not None
     assert completed.optimization_session["current_round"] == pipeline.n_run
+
+
+def test_compute_run_score_status_kind(tmp_path):
+    pipeline = PipelineSpec.model_validate(
+        {
+            "name": "score-status",
+            "working_dir": str(tmp_path),
+            "nodes": [{"id": "a", "agent": "codex", "prompt": "a"}],
+        }
+    )
+    completed = RunRecord(id="r1", status=RunStatus.COMPLETED, pipeline=pipeline, nodes={})
+    failed = RunRecord(id="r2", status=RunStatus.FAILED, pipeline=pipeline, nodes={})
+
+    from agentflow.graph_optimizer import compute_run_score
+
+    assert compute_run_score(pipeline, completed) == 1.0
+    assert compute_run_score(pipeline, failed) == 0.0
+
+
+def test_compute_run_score_nodes_completed_and_command(tmp_path):
+    from agentflow.graph_optimizer import compute_run_score
+
+    pipeline = PipelineSpec.model_validate(
+        {
+            "name": "score-nodes",
+            "working_dir": str(tmp_path),
+            "score": "nodes_completed",
+            "nodes": [{"id": "a", "agent": "codex", "prompt": "a"}],
+        }
+    )
+    record = RunRecord(
+        id="r1",
+        status=RunStatus.FAILED,
+        pipeline=pipeline,
+        nodes={
+            "a": NodeResult(node_id="a", status=NodeStatus.COMPLETED),
+            "b": NodeResult(node_id="b", status=NodeStatus.FAILED),
+        },
+    )
+    assert compute_run_score(pipeline, record) == 1.0
+
+    command_pipeline = PipelineSpec.model_validate(
+        {
+            "name": "score-command",
+            "working_dir": str(tmp_path),
+            "score": {"kind": "command", "command": f'"{sys.executable}" -c "print(3.5)"'},
+            "nodes": [{"id": "a", "agent": "codex", "prompt": "a"}],
+        }
+    )
+    assert compute_run_score(command_pipeline, record) == 3.5
+
+    bad_command_pipeline = PipelineSpec.model_validate(
+        {
+            "name": "score-bad-command",
+            "working_dir": str(tmp_path),
+            "score": {"kind": "command", "command": "exit 1"},
+            "nodes": [{"id": "a", "agent": "codex", "prompt": "a"}],
+        }
+    )
+    assert compute_run_score(bad_command_pipeline, record) == 0.0
+
+
+def test_score_spec_requires_command_for_command_kind(tmp_path):
+    with pytest.raises(ValueError, match="score.command"):
+        PipelineSpec.model_validate(
+            {
+                "name": "bad-score",
+                "working_dir": str(tmp_path),
+                "score": {"kind": "command"},
+                "nodes": [{"id": "a", "agent": "codex", "prompt": "a"}],
+            }
+        )
+
+
+class _RoundSensitiveAdapter(AgentAdapter):
+    def prepare(self, node, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
+        exit_code = 1 if "round two" in prompt else 0
+        script = (
+            "import json\n"
+            "print(json.dumps({'type': 'result', 'result': 'done'}))\n"
+            f"raise SystemExit({exit_code})\n"
+        )
+        return PreparedExecution(
+            command=[sys.executable, "-c", script],
+            env={},
+            cwd=paths.target_workdir,
+            trace_kind="codex",
+        )
+
+
+def test_optimization_session_keeps_incumbent_pipeline(tmp_path, monkeypatch):
+    from agentflow.agents.registry import AdapterRegistry
+    from agentflow.orchestrator import Orchestrator
+    from agentflow.runners.registry import RunnerRegistry
+    from agentflow.specs import AgentKind
+    from agentflow.store import RunStore
+
+    adapters = AdapterRegistry()
+    adapters.register(AgentKind.CODEX, _RoundSensitiveAdapter())
+    orchestrator = Orchestrator(store=RunStore(tmp_path / "runs"), adapters=adapters, runners=RunnerRegistry())
+
+    def fake_optimizer(_optimizer, *, prompt: str, repo_dir: Path, runtime_dir: Path, env: dict[str, str]):
+        pipeline_path = repo_dir / "pipeline.py"
+        text = pipeline_path.read_text(encoding="utf-8")
+        pipeline_path.write_text(text.replace("round one", "round two"), encoding="utf-8")
+        return CommandExecution(command="optimizer", exit_code=0, stdout="updated pipeline", stderr="")
+
+    monkeypatch.setattr("agentflow.orchestrator._run_optimizer", fake_optimizer)
+
+    pipeline = PipelineSpec.model_validate(
+        {
+            "name": "incumbent-opt",
+            "working_dir": str(tmp_path),
+            "optimizer": "codex",
+            "n_run": 2,
+            "nodes": [{"id": "probe", "agent": "codex", "prompt": "round one"}],
+        }
+    )
+
+    run = asyncio.run(orchestrator.submit(pipeline))
+    completed = asyncio.run(orchestrator.wait(run.id, timeout=60))
+
+    assert completed.status == RunStatus.COMPLETED
+    session = completed.optimization_session
+    assert session["best_round"] == 1
+    assert session["best_score"] == 1.0
+    assert [entry["score"] for entry in session["scores"]] == [1.0, 0.0]
+    assert "round one" in completed.pipeline.node_map["probe"].prompt
+    best_path = Path(session["best_pipeline_path"])
+    assert best_path.exists()
+    assert "round one" in best_path.read_text(encoding="utf-8")
