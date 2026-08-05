@@ -289,6 +289,7 @@ Graph("name",
     scratchboard=False,      # shared memory file
     use_worktree=False,      # git worktree per agent
     max_template_value_chars=None,  # truncate oversized {{ nodes.x.* }} values (None = unlimited)
+    rate_limits=None,        # per-agent concurrency caps, e.g. {"codex": 2}
     node_defaults={...},     # defaults for all nodes
     agent_defaults={...},    # per-agent defaults (built-in kinds or custom agent names)
 )

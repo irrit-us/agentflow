@@ -1328,6 +1328,10 @@ class Orchestrator:
         }
         in_progress: dict[str, asyncio.Task[_NodeExecutionOutcome]] = {}
         semaphore = asyncio.Semaphore(pipeline.concurrency)
+        rate_limit_semaphores = {
+            agent_name: asyncio.Semaphore(limit)
+            for agent_name, limit in pipeline.rate_limits.items()
+        }
         loop = asyncio.get_running_loop()
         periodic_state = {
             node_id: _PeriodicNodeRuntimeState()
@@ -1335,25 +1339,39 @@ class Orchestrator:
             if node.schedule is not None
         }
 
+        def _rate_limit_semaphore(node: NodeSpec) -> asyncio.Semaphore | None:
+            if not rate_limit_semaphores:
+                return None
+            kind = builtin_agent_kind(node.agent)
+            key = kind.value if kind is not None else str(node.agent).strip()
+            return rate_limit_semaphores.get(key)
+
         async def launch(node_id: str) -> _NodeExecutionOutcome:
             async with semaphore:
                 node = node_map[node_id]
-                if node.schedule is None:
-                    return await self._execute_node(run_id, node_id)
-                state = periodic_state[node_id]
-                state.tick_count += 1
-                tick_started_at = utcnow_iso()
-                state.last_tick_started_at = tick_started_at
-                state.last_tick_started_mono = loop.time()
-                record.nodes[node_id].tick_count = state.tick_count
-                record.nodes[node_id].last_tick_started_at = tick_started_at
-                record.nodes[node_id].next_scheduled_at = None
-                return await self._execute_node(
-                    run_id,
-                    node_id,
-                    periodic_tick_number=state.tick_count,
-                    periodic_tick_started_at=tick_started_at,
-                )
+                agent_semaphore = _rate_limit_semaphore(node)
+                if agent_semaphore is not None:
+                    await agent_semaphore.acquire()
+                try:
+                    if node.schedule is None:
+                        return await self._execute_node(run_id, node_id)
+                    state = periodic_state[node_id]
+                    state.tick_count += 1
+                    tick_started_at = utcnow_iso()
+                    state.last_tick_started_at = tick_started_at
+                    state.last_tick_started_mono = loop.time()
+                    record.nodes[node_id].tick_count = state.tick_count
+                    record.nodes[node_id].last_tick_started_at = tick_started_at
+                    record.nodes[node_id].next_scheduled_at = None
+                    return await self._execute_node(
+                        run_id,
+                        node_id,
+                        periodic_tick_number=state.tick_count,
+                        periodic_tick_started_at=tick_started_at,
+                    )
+                finally:
+                    if agent_semaphore is not None:
+                        agent_semaphore.release()
 
         while remaining or in_progress:
             if self._should_cancel(run_id):

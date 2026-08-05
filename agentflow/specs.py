@@ -1616,6 +1616,7 @@ class PipelineSpec(BaseModel):
     scratchboard: bool = False
     use_worktree: bool = False
     max_template_value_chars: int | None = Field(default=None, gt=0)
+    rate_limits: dict[str, int] = Field(default_factory=dict)
     node_defaults: dict[str, Any] | None = None
     agent_defaults: dict[str, dict[str, Any]] = Field(default_factory=dict)
     local_target_defaults: LocalTarget | None = None
@@ -1691,6 +1692,19 @@ class PipelineSpec(BaseModel):
                     f"scheduled node {node.id!r} must appear after the watched fanout group `{watched_group}`"
                 )
         _validate_well_formedness(self)
+        if self.rate_limits:
+            normalized_limits: dict[str, int] = {}
+            for raw_key, limit in self.rate_limits.items():
+                key = raw_key.value if isinstance(raw_key, AgentKind) else str(raw_key).strip()
+                if not key:
+                    raise ValueError("`rate_limits` keys must be non-empty agent names")
+                kind = builtin_agent_kind(key)
+                if kind is not None:
+                    key = kind.value
+                if limit < 1:
+                    raise ValueError(f"`rate_limits.{key}` must be at least 1")
+                normalized_limits[key] = limit
+            self.rate_limits = normalized_limits
         return self
 
     @property
