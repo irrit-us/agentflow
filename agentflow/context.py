@@ -210,6 +210,7 @@ def build_render_context(
     current_tick_started_at: str | None = None,
     max_value_chars: int | None = None,
     truncation_log: list[dict[str, Any]] | None = None,
+    feedback: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     nodes: dict[str, Any] = {}
     for node_id, result in results.items():
@@ -241,7 +242,16 @@ def build_render_context(
         fanouts[group_id] = _fanout_context(member_nodes)
         for member in member_nodes:
             fanout_member_contexts[member["id"]] = member
-    context = {"pipeline": pipeline.model_dump(mode="json"), "nodes": nodes, "fanouts": fanouts}
+    collected_feedback = feedback or {}
+    context = {
+        "pipeline": pipeline.model_dump(mode="json"),
+        "nodes": nodes,
+        "fanouts": fanouts,
+        "feedback": {
+            name: collected_feedback.get(name, "")
+            for name in pipeline.feedback_channels
+        },
+    }
     if current_node is not None:
         current_context = _current_node_context(
             current_node,
@@ -282,6 +292,7 @@ def render_node_prompt(
     current_tick_number: int | None = None,
     current_tick_started_at: str | None = None,
     truncation_log: list[dict[str, Any]] | None = None,
+    feedback: dict[str, str] | None = None,
 ) -> str:
     context = build_render_context(
         pipeline,
@@ -293,6 +304,7 @@ def render_node_prompt(
         current_tick_started_at=current_tick_started_at,
         max_value_chars=pipeline.max_template_value_chars,
         truncation_log=truncation_log,
+        feedback=feedback,
     )
     prompt = render_template(node.prompt, context)
     skill_prelude = compile_skill_prelude(node.skills, pipeline.working_path)

@@ -793,6 +793,30 @@ class FanoutSpec(BaseModel):
         return self.count
 
 
+class FeedbackChannelSpec(BaseModel):
+    """A named runtime feedback channel emitted by the target program.
+
+    Collected after the node named by `after` finishes: either read from a
+    file (`path`, relative to the node's working directory) or produced by a
+    shell `command` run in that directory. Bound into templates as
+    `{{ feedback.<name> }}` for subsequently dispatched nodes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    after: str
+    path: str | None = None
+    command: str | None = None
+
+    @model_validator(mode="after")
+    def validate_channel(self) -> "FeedbackChannelSpec":
+        if not self.after.strip():
+            raise ValueError("feedback channel `after` must not be empty")
+        if (self.path is None) == (self.command is None):
+            raise ValueError("feedback channel requires exactly one of `path` or `command`")
+        return self
+
+
 class PeriodicScheduleSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1488,19 +1512,20 @@ def apply_local_target_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
-def _template_id_references(prompt: str) -> tuple[set[str], set[str], set[str]]:
+def _template_id_references(prompt: str) -> tuple[set[str], set[str], set[str], set[str]]:
     """Extract template references from a node prompt.
 
-    Returns `(node_ids, fanout_group_ids, top_level_names)` referenced via
-    `{{ nodes.<id>.* }}`, `{{ fanouts.<id>.* }}`, and any free top-level name.
-    Non-constant subscripts (e.g. `nodes[dynamic]`) are ignored: they cannot
-    be resolved statically and stay a runtime concern.
+    Returns `(node_ids, fanout_group_ids, feedback_channel_names,
+    top_level_names)` referenced via `{{ nodes.<id>.* }}`,
+    `{{ fanouts.<id>.* }}`, `{{ feedback.<name> }}`, and any free top-level
+    name. Non-constant subscripts (e.g. `nodes[dynamic]`) are ignored: they
+    cannot be resolved statically and stay a runtime concern.
     """
     try:
         ast = Environment().parse(prompt or "")
     except Exception:
         # Syntax errors surface at render time; nothing to check statically.
-        return set(), set(), set()
+        return set(), set(), set(), set()
 
     def _resolve(expr: Any) -> tuple[str | None, list[str]]:
         parts: list[str] = []
@@ -1523,6 +1548,7 @@ def _template_id_references(prompt: str) -> tuple[set[str], set[str], set[str]]:
 
     node_refs: set[str] = set()
     fanout_refs: set[str] = set()
+    feedback_refs: set[str] = set()
     for expr in ast.find_all((jinja_nodes.Getattr, jinja_nodes.Getitem)):
         root, path = _resolve(expr)
         if not path:
@@ -1531,8 +1557,10 @@ def _template_id_references(prompt: str) -> tuple[set[str], set[str], set[str]]:
             node_refs.add(path[0])
         elif root == "fanouts":
             fanout_refs.add(path[0])
+        elif root == "feedback":
+            feedback_refs.add(path[0])
     top_level = set(jinja_meta.find_undeclared_variables(ast))
-    return node_refs, fanout_refs, top_level
+    return node_refs, fanout_refs, feedback_refs, top_level
 
 
 def _validate_well_formedness(pipeline: "PipelineSpec") -> None:
@@ -1556,8 +1584,12 @@ def _validate_well_formedness(pipeline: "PipelineSpec") -> None:
     }
 
     unreferenced_edges: list[str] = []
+    declared_channels = set(pipeline.feedback_channels)
+    channels_by_anchor: dict[str, set[str]] = {}
+    for channel_name, channel in pipeline.feedback_channels.items():
+        channels_by_anchor.setdefault(channel.after, set()).add(channel_name)
     for node in pipeline.nodes:
-        node_refs, fanout_refs, top_level = _template_id_references(node.prompt)
+        node_refs, fanout_refs, feedback_refs, top_level = _template_id_references(node.prompt)
         unknown_nodes = node_refs - ids
         if unknown_nodes:
             raise ValueError(
@@ -1568,8 +1600,15 @@ def _validate_well_formedness(pipeline: "PipelineSpec") -> None:
             raise ValueError(
                 f"node {node.id!r} prompt references unknown fanout groups: {sorted(unknown_fanouts)}"
             )
+        unknown_channels = feedback_refs - declared_channels
+        if unknown_channels:
+            raise ValueError(
+                f"node {node.id!r} prompt references unknown feedback channels: {sorted(unknown_channels)}"
+            )
         for dependency in dict.fromkeys(node.depends_on):
             if dependency in node_refs:
+                continue
+            if channels_by_anchor.get(dependency, set()) & feedback_refs:
                 continue
             group = group_by_member.get(dependency)
             if group is not None and (group in fanout_refs or "item" in top_level):
@@ -1618,6 +1657,7 @@ class PipelineSpec(BaseModel):
     use_worktree: bool = False
     max_template_value_chars: int | None = Field(default=None, gt=0)
     rate_limits: dict[str, int] = Field(default_factory=dict)
+    feedback_channels: dict[str, FeedbackChannelSpec] = Field(default_factory=dict)
     node_defaults: dict[str, Any] | None = None
     agent_defaults: dict[str, dict[str, Any]] = Field(default_factory=dict)
     local_target_defaults: LocalTarget | None = None
@@ -1693,6 +1733,11 @@ class PipelineSpec(BaseModel):
                     f"scheduled node {node.id!r} must appear after the watched fanout group `{watched_group}`"
                 )
         _validate_well_formedness(self)
+        unknown_channel_anchors = {
+            channel.after for channel in self.feedback_channels.values() if channel.after not in ids
+        }
+        if unknown_channel_anchors:
+            raise ValueError(f"feedback channels reference unknown nodes in `after`: {sorted(unknown_channel_anchors)}")
         if self.rate_limits:
             normalized_limits: dict[str, int] = {}
             for raw_key, limit in self.rate_limits.items():

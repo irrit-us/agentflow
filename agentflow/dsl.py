@@ -175,6 +175,7 @@ class Graph:
         use_worktree: bool = False,
         max_template_value_chars: int | None = None,
         rate_limits: dict[str, int] | None = None,
+        feedback_channels: dict[str, dict[str, Any]] | None = None,
         node_defaults: dict[str, Any] | None = None,
         agent_defaults: dict[str | AgentKind, dict[str, Any]] | None = None,
         local_target_defaults: dict[str, Any] | LocalTarget | None = None,
@@ -192,6 +193,7 @@ class Graph:
         self.use_worktree = use_worktree
         self.max_template_value_chars = max_template_value_chars
         self.rate_limits = rate_limits
+        self.feedback_channels = feedback_channels
         self.node_defaults = node_defaults
         self.agent_defaults = agent_defaults
         self.local_target_defaults = local_target_defaults
@@ -239,6 +241,8 @@ class Graph:
             payload["max_template_value_chars"] = self.max_template_value_chars
         if self.rate_limits:
             payload["rate_limits"] = dict(self.rate_limits)
+        if self.feedback_channels:
+            payload["feedback_channels"] = deepcopy(self.feedback_channels)
         if self.node_defaults is not None:
             payload["node_defaults"] = _normalize_node_defaults(self.node_defaults)
         if self.agent_defaults:

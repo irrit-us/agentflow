@@ -113,6 +113,7 @@ class Orchestrator:
     _node_cancel_flags: dict[str, set[str]] = field(default_factory=dict, init=False, repr=False)
     _pending_node_reruns: dict[str, set[str]] = field(default_factory=dict, init=False, repr=False)
     _scratchboards: dict[str, "Scratchboard"] = field(default_factory=dict, init=False, repr=False)
+    _feedback: dict[str, dict[str, str]] = field(default_factory=dict, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self._run_slots = threading.Semaphore(self.max_concurrent_runs)
@@ -1004,6 +1005,7 @@ class Orchestrator:
             current_tick_number=periodic_tick_number,
             current_tick_started_at=periodic_tick_started_at,
             truncation_log=truncation_log,
+            feedback=self._feedback.get(run_id, {}),
         )
         if truncation_log:
             details = ", ".join(
@@ -1254,6 +1256,10 @@ class Orchestrator:
                     if stripped.startswith("SCRATCHBOARD:"):
                         content = stripped.removeprefix("SCRATCHBOARD:").strip()
                         await scratchboard.append(node_id, content)
+
+            # Collect declared feedback channels anchored to this node so
+            # subsequently dispatched nodes can reference {{ feedback.<name> }}.
+            await self._collect_node_feedback(run_id, node_id, pipeline, execution_node.target)
         finally:
             # Capture the worktree diff and always clean up the worktree and
             # its temporary branch, including on cancellation or exceptions.
@@ -1284,6 +1290,57 @@ class Orchestrator:
                 periodic_action_parse_error=periodic_action_parse_error,
             )
         return _NodeExecutionOutcome(node_id=node_id)
+
+    async def _collect_node_feedback(self, run_id: str, node_id: str, pipeline: PipelineSpec, target: object) -> None:
+        """Collect feedback channels anchored to `node_id` into run state.
+
+        Channels read a file or run a command in the node's working directory
+        (local targets only). Collection failures surface as warning traces and
+        leave the channel empty rather than failing the run.
+        """
+        channels = {
+            name: channel
+            for name, channel in pipeline.feedback_channels.items()
+            if channel.after == node_id
+        }
+        if not channels:
+            return
+        if getattr(target, "kind", "local") != "local":
+            for name in channels:
+                await self._publish(
+                    run_id,
+                    "node_trace",
+                    node_id=node_id,
+                    trace={"kind": "warning", "title": f"Feedback channel `{name}` supports local targets only"},
+                )
+            return
+        cwd = Path(getattr(target, "cwd", None) or pipeline.working_path)
+        if not cwd.is_absolute():
+            cwd = Path(pipeline.working_path) / cwd
+        collected = self._feedback.setdefault(run_id, {})
+        for name, channel in channels.items():
+            try:
+                if channel.path is not None:
+                    value = (cwd / channel.path).read_text(encoding="utf-8", errors="replace")
+                else:
+                    process = await asyncio.create_subprocess_shell(
+                        channel.command or "",
+                        cwd=str(cwd),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                    value = stdout.decode("utf-8", errors="replace")
+            except Exception as exc:
+                await self._publish(
+                    run_id,
+                    "node_trace",
+                    node_id=node_id,
+                    trace={"kind": "warning", "title": f"Feedback channel `{name}` collection failed: {exc}"},
+                )
+                continue
+            collected[name] = value
+            await self._publish(run_id, "feedback_collected", node_id=node_id, channel=name, chars=len(value))
 
     async def run(self, run_id: str) -> RunRecord:
         """Drive a run until all nodes reach terminal outcomes.
@@ -1642,4 +1699,5 @@ class Orchestrator:
         await self.store.persist_run(run_id)
         self._node_cancel_flags.pop(run_id, None)
         self._pending_node_reruns.pop(run_id, None)
+        self._feedback.pop(run_id, None)
         return record

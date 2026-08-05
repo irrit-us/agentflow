@@ -175,6 +175,31 @@ with Graph("guarded") as g:
 A node whose failure is consumed by an `on_fail` branch does not fail the run.
 `depends_on_failure` is also available as a raw node field (JSON pipelines).
 
+## Feedback Channels
+
+Pipelines can declare named runtime feedback channels that the target program
+emits (test verdicts, coverage maps, sanitizer logs). A channel is collected
+after its anchor node finishes — from a file or a shell command run in that
+node's working directory — and bound into templates as `{{ feedback.<name> }}`
+for subsequently dispatched nodes:
+
+```python
+with Graph("vuln", feedback_channels={
+    "cov": {"after": "run_tests", "path": "coverage/summary.txt"},
+    "san": {"after": "run_tests", "command": "cat asan.log"},
+}) as g:
+    run_tests = codex(task_id="run_tests", prompt="Build and run the instrumented target.")
+    triage = codex(task_id="triage", prompt=(
+        "Coverage:\n{{ feedback.cov }}\nSanitizer:\n{{ feedback.san }}\n"
+        "Decide whether the crash is a real vulnerability."
+    ))
+    run_tests >> triage
+```
+
+Templates referencing undeclared channels are rejected at load time
+(well-formedness check). Collection is local-target only; failures surface as
+warning traces and leave the channel empty.
+
 ## Execution Targets
 
 ### Local (default)
