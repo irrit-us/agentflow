@@ -1037,231 +1037,228 @@ class Orchestrator:
                     await self._publish(run_id, "node_trace", node_id=node_id,
                         trace={"kind": "warning", "title": f"Worktree failed: {exc}"})
 
-        paths = self._build_paths(pipeline, run_id, node_id, execution_node.target)
+        try:
+            paths = self._build_paths(pipeline, run_id, node_id, execution_node.target)
 
-        # Inject scratchboard file location into prompt
-        scratchboard = self._scratchboards.get(run_id)
-        if scratchboard is not None:
-            from agentflow.scratchboard import SCRATCHBOARD_FILENAME, SCRATCHBOARD_PROMPT_SUFFIX
-            if execution_node.target.kind == "local":
-                sb_path = str(scratchboard.path)
-            else:
-                sb_path = f"{paths.target_runtime_dir}/{SCRATCHBOARD_FILENAME}"
-            prompt += SCRATCHBOARD_PROMPT_SUFFIX.format(scratchboard_path=sb_path)
-        adapter = self.adapters.get(runtime_agent)
-        runner = self.runners.get(execution_node.target.kind)
-        parser = create_trace_parser(runtime_agent, node.id)
-        periodic_actions: _PeriodicActionEnvelope | None = None
-        periodic_action_parse_error: str | None = None
+            # Inject scratchboard file location into prompt
+            scratchboard = self._scratchboards.get(run_id)
+            if scratchboard is not None:
+                from agentflow.scratchboard import SCRATCHBOARD_FILENAME, SCRATCHBOARD_PROMPT_SUFFIX
+                if execution_node.target.kind == "local":
+                    sb_path = str(scratchboard.path)
+                else:
+                    sb_path = f"{paths.target_runtime_dir}/{SCRATCHBOARD_FILENAME}"
+                prompt += SCRATCHBOARD_PROMPT_SUFFIX.format(scratchboard_path=sb_path)
+            adapter = self.adapters.get(runtime_agent)
+            runner = self.runners.get(execution_node.target.kind)
+            parser = create_trace_parser(runtime_agent, node.id)
+            periodic_actions: _PeriodicActionEnvelope | None = None
+            periodic_action_parse_error: str | None = None
 
-        for attempt_number in range(1, node.retries + 2):
-            if self._should_cancel(run_id):
-                await self._mark_node_cancelled(run_id, node_id, "run_cancelled")
-                return _NodeExecutionOutcome(node_id=node_id, periodic_tick_number=periodic_tick_number)
+            for attempt_number in range(1, node.retries + 2):
+                if self._should_cancel(run_id):
+                    await self._mark_node_cancelled(run_id, node_id, "run_cancelled")
+                    return _NodeExecutionOutcome(node_id=node_id, periodic_tick_number=periodic_tick_number)
 
-            attempt = NodeAttempt(number=attempt_number, status=NodeStatus.RUNNING, started_at=utcnow_iso())
-            attempt_stdout_lines: list[str] = []
-            attempt_stderr_lines: list[str] = []
-            result.current_attempt = attempt_number
-            result.attempts.append(attempt)
-            parser.start_attempt(attempt_number)
-            prepared = adapter.prepare(execution_node, prompt, paths)
-            # Forward local credentials to remote targets when enabled
-            # EC2/ECS: always forward (ephemeral, no pre-existing config)
-            # SSH: only if forward_credentials=True (remote has its own identity)
-            should_forward = (
-                execution_node.target.kind in ("ec2", "ecs")
-                or (execution_node.target.kind == "ssh" and getattr(execution_node.target, "forward_credentials", False))
-            )
-            if should_forward:
-                from agentflow.cloud.aws import collect_local_credentials
-                local_creds = collect_local_credentials(runtime_agent.value)
-                merged = {**local_creds, **prepared.env}
-                prepared = PreparedExecution(
-                    command=prepared.command, env=merged, cwd=prepared.cwd,
-                    trace_kind=prepared.trace_kind, runtime_files=prepared.runtime_files,
-                    stdin=prepared.stdin,
+                attempt = NodeAttempt(number=attempt_number, status=NodeStatus.RUNNING, started_at=utcnow_iso())
+                attempt_stdout_lines: list[str] = []
+                attempt_stderr_lines: list[str] = []
+                result.current_attempt = attempt_number
+                result.attempts.append(attempt)
+                parser.start_attempt(attempt_number)
+                prepared = adapter.prepare(execution_node, prompt, paths)
+                # Forward local credentials to remote targets when enabled
+                # EC2/ECS: always forward (ephemeral, no pre-existing config)
+                # SSH: only if forward_credentials=True (remote has its own identity)
+                should_forward = (
+                    execution_node.target.kind in ("ec2", "ecs")
+                    or (execution_node.target.kind == "ssh" and getattr(execution_node.target, "forward_credentials", False))
                 )
-            # Inject scratchboard file into runtime_files for remote targets
-            if scratchboard is not None and execution_node.target.kind not in ("local",):
-                from agentflow.scratchboard import SCRATCHBOARD_FILENAME
-                prepared.runtime_files[SCRATCHBOARD_FILENAME] = scratchboard.read()
-            plan = runner.plan_execution(execution_node, prepared, paths)
-            await self._write_launch_artifacts(run_id, node_id, attempt_number, plan)
-            await self.store.append_artifact_text(
-                run_id,
-                node_id,
-                "stdout.log",
-                f"\n=== attempt {attempt_number} started {attempt.started_at} ===\n",
-            )
-            await self.store.append_artifact_text(
-                run_id,
-                node_id,
-                "stderr.log",
-                f"\n=== attempt {attempt_number} started {attempt.started_at} ===\n",
-            )
-            if attempt_number > 1:
-                result.status = NodeStatus.RETRYING
-                await self._publish(
+                if should_forward:
+                    from agentflow.cloud.aws import collect_local_credentials
+                    local_creds = collect_local_credentials(runtime_agent.value)
+                    merged = {**local_creds, **prepared.env}
+                    prepared = PreparedExecution(
+                        command=prepared.command, env=merged, cwd=prepared.cwd,
+                        trace_kind=prepared.trace_kind, runtime_files=prepared.runtime_files,
+                        stdin=prepared.stdin,
+                    )
+                # Inject scratchboard file into runtime_files for remote targets
+                if scratchboard is not None and execution_node.target.kind not in ("local",):
+                    from agentflow.scratchboard import SCRATCHBOARD_FILENAME
+                    prepared.runtime_files[SCRATCHBOARD_FILENAME] = scratchboard.read()
+                plan = runner.plan_execution(execution_node, prepared, paths)
+                await self._write_launch_artifacts(run_id, node_id, attempt_number, plan)
+                await self.store.append_artifact_text(
                     run_id,
-                    "node_retrying",
-                    node_id=node_id,
-                    attempt=attempt_number,
-                    max_attempts=node.retries + 1,
+                    node_id,
+                    "stdout.log",
+                    f"\n=== attempt {attempt_number} started {attempt.started_at} ===\n",
                 )
-                result.status = NodeStatus.RUNNING
+                await self.store.append_artifact_text(
+                    run_id,
+                    node_id,
+                    "stderr.log",
+                    f"\n=== attempt {attempt_number} started {attempt.started_at} ===\n",
+                )
+                if attempt_number > 1:
+                    result.status = NodeStatus.RETRYING
+                    await self._publish(
+                        run_id,
+                        "node_retrying",
+                        node_id=node_id,
+                        attempt=attempt_number,
+                        max_attempts=node.retries + 1,
+                    )
+                    result.status = NodeStatus.RUNNING
 
-            async def on_output(stream_name: str, line: str) -> None:
-                if stream_name == "stdout":
-                    await self.store.append_artifact_text(run_id, node_id, "stdout.log", line + "\n")
-                    parsed_events = parser.feed(line)
-                    if parsed_events or parser.supports_raw_stdout_fallback():
-                        attempt_stdout_lines.append(line)
-                    for event in parsed_events:
+                async def on_output(stream_name: str, line: str) -> None:
+                    if stream_name == "stdout":
+                        await self.store.append_artifact_text(run_id, node_id, "stdout.log", line + "\n")
+                        parsed_events = parser.feed(line)
+                        if parsed_events or parser.supports_raw_stdout_fallback():
+                            attempt_stdout_lines.append(line)
+                        for event in parsed_events:
+                            result.trace_events.append(event)
+                            await self._publish_trace(run_id, node_id, event)
+                    else:
+                        attempt_stderr_lines.append(line)
+                        await self.store.append_artifact_text(run_id, node_id, "stderr.log", line + "\n")
+                        event = parser.emit("stderr", "stderr", line, line, source="stderr")
                         result.trace_events.append(event)
                         await self._publish_trace(run_id, node_id, event)
-                else:
-                    attempt_stderr_lines.append(line)
-                    await self.store.append_artifact_text(run_id, node_id, "stderr.log", line + "\n")
-                    event = parser.emit("stderr", "stderr", line, line, source="stderr")
-                    result.trace_events.append(event)
-                    await self._publish_trace(run_id, node_id, event)
 
-            raw = await runner.execute(
-                execution_node,
-                prepared,
-                paths,
-                on_output,
-                lambda: self._should_cancel(run_id) or self._should_cancel_node(run_id, node_id),
-            )
-            result.exit_code = raw.exit_code
-            result.stdout_lines = attempt_stdout_lines
-            result.stderr_lines = attempt_stderr_lines
-            result.final_response = parser.finalize()
-            if not result.final_response and parser.supports_raw_stdout_fallback():
-                result.final_response = "\n".join(attempt_stdout_lines).strip()
-            result.output = result.final_response if execution_node.capture.value == "final" else "\n".join(attempt_stdout_lines)
-            success_ok, success_details = evaluate_success(execution_node, result, paths.host_workdir)
-            result.success = success_ok
-            result.success_details = success_details
-            attempt.finished_at = utcnow_iso()
-            attempt.exit_code = raw.exit_code
-            attempt.final_response = result.final_response
-            attempt.output = result.output
-            attempt.success = success_ok
-            attempt.success_details = success_details
+                raw = await runner.execute(
+                    execution_node,
+                    prepared,
+                    paths,
+                    on_output,
+                    lambda: self._should_cancel(run_id) or self._should_cancel_node(run_id, node_id),
+                )
+                result.exit_code = raw.exit_code
+                result.stdout_lines = attempt_stdout_lines
+                result.stderr_lines = attempt_stderr_lines
+                result.final_response = parser.finalize()
+                if not result.final_response and parser.supports_raw_stdout_fallback():
+                    result.final_response = "\n".join(attempt_stdout_lines).strip()
+                result.output = result.final_response if execution_node.capture.value == "final" else "\n".join(attempt_stdout_lines)
+                success_ok, success_details = evaluate_success(execution_node, result, paths.host_workdir)
+                result.success = success_ok
+                result.success_details = success_details
+                attempt.finished_at = utcnow_iso()
+                attempt.exit_code = raw.exit_code
+                attempt.final_response = result.final_response
+                attempt.output = result.output
+                attempt.success = success_ok
+                attempt.success_details = success_details
 
-            if raw.cancelled or self._should_cancel(run_id):
-                attempt.status = NodeStatus.CANCELLED
-                result.status = NodeStatus.CANCELLED
+                if raw.cancelled or self._should_cancel(run_id):
+                    attempt.status = NodeStatus.CANCELLED
+                    result.status = NodeStatus.CANCELLED
+                    result.finished_at = attempt.finished_at
+                    await self._publish(
+                        run_id,
+                        "node_cancelled",
+                        node_id=node_id,
+                        attempt=attempt_number,
+                        exit_code=raw.exit_code,
+                    )
+                    break
+
+                if raw.exit_code == 0 and success_ok:
+                    attempt.status = NodeStatus.COMPLETED
+                    result.status = NodeStatus.READY if periodic_tick_number is not None else NodeStatus.COMPLETED
+                    result.finished_at = attempt.finished_at
+                    if periodic_tick_number is not None:
+                        if execution_node.schedule and execution_node.schedule.actuation == PeriodicActuationMode.OUTPUT_JSON:
+                            periodic_actions, periodic_action_parse_error = self._parse_periodic_actions(result.final_response)
+                            if periodic_actions is not None and periodic_actions.analysis is not None:
+                                result.output = periodic_actions.analysis
+                                attempt.output = result.output
+                        await self._publish(
+                            run_id,
+                            "node_tick_completed",
+                            node_id=node_id,
+                            tick_number=periodic_tick_number,
+                            attempt=attempt_number,
+                            exit_code=result.exit_code,
+                            success=result.success,
+                            output=result.output,
+                            final_response=result.final_response,
+                            success_details=result.success_details,
+                        )
+                    else:
+                        await self._publish(
+                            run_id,
+                            "node_completed",
+                            node_id=node_id,
+                            attempt=attempt_number,
+                            exit_code=result.exit_code,
+                            success=result.success,
+                            output=result.output,
+                            final_response=result.final_response,
+                            success_details=result.success_details,
+                        )
+                    break
+
+                attempt.status = NodeStatus.FAILED
+                result.status = NodeStatus.FAILED
                 result.finished_at = attempt.finished_at
                 await self._publish(
                     run_id,
-                    "node_cancelled",
+                    "node_failed",
                     node_id=node_id,
                     attempt=attempt_number,
-                    exit_code=raw.exit_code,
+                    exit_code=result.exit_code,
+                    success=result.success,
+                    output=result.output,
+                    final_response=result.final_response,
+                    success_details=result.success_details,
                 )
+                if attempt_number <= node.retries:
+                    if getattr(node, "retry_backoff_strategy", "exponential") == "exponential":
+                        delay = min(
+                            node.retry_backoff_seconds * (2 ** (attempt_number - 1)),
+                            getattr(node, "retry_backoff_max_seconds", 300.0),
+                        )
+                    else:
+                        delay = node.retry_backoff_seconds * attempt_number
+                    await asyncio.sleep(max(delay, 0.0))
+                    continue
                 break
 
-            if raw.exit_code == 0 and success_ok:
-                attempt.status = NodeStatus.COMPLETED
-                result.status = NodeStatus.READY if periodic_tick_number is not None else NodeStatus.COMPLETED
-                result.finished_at = attempt.finished_at
-                if periodic_tick_number is not None:
-                    if execution_node.schedule and execution_node.schedule.actuation == PeriodicActuationMode.OUTPUT_JSON:
-                        periodic_actions, periodic_action_parse_error = self._parse_periodic_actions(result.final_response)
-                        if periodic_actions is not None and periodic_actions.analysis is not None:
-                            result.output = periodic_actions.analysis
-                            attempt.output = result.output
-                    await self._publish(
-                        run_id,
-                        "node_tick_completed",
-                        node_id=node_id,
-                        tick_number=periodic_tick_number,
-                        attempt=attempt_number,
-                        exit_code=result.exit_code,
-                        success=result.success,
-                        output=result.output,
-                        final_response=result.final_response,
-                        success_details=result.success_details,
-                    )
-                else:
-                    await self._publish(
-                        run_id,
-                        "node_completed",
-                        node_id=node_id,
-                        attempt=attempt_number,
-                        exit_code=result.exit_code,
-                        success=result.success,
-                        output=result.output,
-                        final_response=result.final_response,
-                        success_details=result.success_details,
-                    )
-                break
+            await self.store.write_artifact_text(run_id, node_id, "output.txt", result.output or "")
+            await self.store.write_artifact_json(run_id, node_id, "result.json", result.model_dump(mode="json"))
 
-            attempt.status = NodeStatus.FAILED
-            result.status = NodeStatus.FAILED
-            result.finished_at = attempt.finished_at
-            await self._publish(
-                run_id,
-                "node_failed",
-                node_id=node_id,
-                attempt=attempt_number,
-                exit_code=result.exit_code,
-                success=result.success,
-                output=result.output,
-                final_response=result.final_response,
-                success_details=result.success_details,
-            )
-            if attempt_number <= node.retries:
-                if getattr(node, "retry_backoff_strategy", "exponential") == "exponential":
-                    delay = min(
-                        node.retry_backoff_seconds * (2 ** (attempt_number - 1)),
-                        getattr(node, "retry_backoff_max_seconds", 300.0),
-                    )
-                else:
-                    delay = node.retry_backoff_seconds * attempt_number
-                await asyncio.sleep(max(delay, 0.0))
-                continue
-            break
-
-        await self.store.write_artifact_text(run_id, node_id, "output.txt", result.output or "")
-        await self.store.write_artifact_json(run_id, node_id, "result.json", result.model_dump(mode="json"))
-
-        # Merge scratchboard writes from node output
-        scratchboard = self._scratchboards.get(run_id)
-        if scratchboard is not None and result.output:
-            for line in result.output.splitlines():
-                stripped = line.strip()
-                if stripped.startswith("SCRATCHBOARD:"):
-                    content = stripped.removeprefix("SCRATCHBOARD:").strip()
-                    await scratchboard.append(node_id, content)
-
-        # Capture diff from worktree (local) or remote (SSH/EC2/ECS)
-        if pipeline.use_worktree:
-            diff = ""
-            if worktree_dir is not None:
-                # Local: diff from worktree
-                from agentflow.worktree import get_worktree_diff, remove_worktree
-                try:
-                    diff = get_worktree_diff(worktree_dir)
-                except Exception:
-                    pass
-            # For remote nodes (SSH/EC2/ECS), diff is captured from the node output
-            # if the node prompt asks for `git diff`. No automatic remote diff capture.
-            if diff:
-                await self.store.write_artifact_text(run_id, node_id, "diff.patch", diff)
-            result.diff = diff
-
-            # Clean up worktree
-            if worktree_dir is not None:
-                from agentflow.worktree import remove_worktree
-                try:
-                    remove_worktree(pipeline.working_path, worktree_dir)
-                except Exception:
-                    pass
-
+            # Merge scratchboard writes from node output
+            scratchboard = self._scratchboards.get(run_id)
+            if scratchboard is not None and result.output:
+                for line in result.output.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("SCRATCHBOARD:"):
+                        content = stripped.removeprefix("SCRATCHBOARD:").strip()
+                        await scratchboard.append(node_id, content)
+        finally:
+            # Capture the worktree diff and always clean up the worktree and
+            # its temporary branch, including on cancellation or exceptions.
+            if pipeline.use_worktree:
+                diff = ""
+                if worktree_dir is not None:
+                    from agentflow.worktree import get_worktree_diff, remove_worktree
+                    try:
+                        diff = get_worktree_diff(worktree_dir)
+                    except Exception:
+                        diff = ""
+                    if diff:
+                        try:
+                            await self.store.write_artifact_text(run_id, node_id, "diff.patch", diff)
+                        except Exception:
+                            pass
+                    try:
+                        remove_worktree(pipeline.working_path, worktree_dir)
+                    except Exception:
+                        pass
+                result.diff = diff
         await self.store.persist_run(run_id)
         if periodic_tick_number is not None:
             return _NodeExecutionOutcome(

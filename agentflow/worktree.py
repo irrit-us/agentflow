@@ -55,13 +55,29 @@ def get_worktree_diff(worktree_dir: Path) -> str:
 
 
 def remove_worktree(repo_dir: Path, worktree_dir: Path) -> None:
-    """Remove a git worktree."""
+    """Remove a git worktree and the temporary branch created for it."""
     subprocess.run(
         ["git", "worktree", "remove", "--force", str(worktree_dir)],
         cwd=str(repo_dir),
         capture_output=True,
         text=True,
         timeout=30,
+    )
+    # Best-effort cleanup of the `agentflow/<run>/<node>` branch created by
+    # create_worktree; skipped for detached worktrees or foreign paths.
+    try:
+        rel = Path(worktree_dir).resolve().relative_to((repo_dir / ".agentflow" / "worktrees").resolve())
+    except ValueError:
+        return
+    if len(rel.parts) != 2:
+        return
+    run_id, safe_id = rel.parts
+    subprocess.run(
+        ["git", "branch", "-D", f"agentflow/{run_id[:8]}/{safe_id}"],
+        cwd=str(repo_dir),
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
 
 
