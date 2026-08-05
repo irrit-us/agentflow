@@ -79,6 +79,36 @@ def test_pipeline_validation_applies_node_defaults_and_agent_defaults():
     ]
 
 
+def test_pipeline_validation_applies_agent_defaults_to_custom_agent_names():
+    pipeline = PipelineSpec.model_validate(
+        {
+            "name": "custom-agent-defaults",
+            "working_dir": ".",
+            "agent_defaults": {
+                "my-reviewer": {
+                    "model": "gpt-5-codex",
+                    "retries": 2,
+                    "env": {"CUSTOM_ENV": "1"},
+                },
+                "codex": {"model": "gpt-5-codex-mini"},
+            },
+            "nodes": [
+                {"id": "review", "agent": "my-reviewer", "prompt": "review"},
+                {"id": "plan", "agent": "codex", "prompt": "plan"},
+                {"id": "other", "agent": "claude", "prompt": "other"},
+            ],
+        }
+    )
+
+    nodes = pipeline.node_map
+    assert nodes["review"].model == "gpt-5-codex"
+    assert nodes["review"].retries == 2
+    assert nodes["review"].env == {"CUSTOM_ENV": "1"}
+    assert nodes["plan"].model == "gpt-5-codex-mini"
+    assert nodes["other"].model is None
+    assert pipeline.agent_defaults["my-reviewer"]["retries"] == 2
+
+
 def test_pipeline_validation_rejects_forbidden_node_default_fields():
     with pytest.raises(ValueError, match="node_defaults.*prompt"):
         PipelineSpec.model_validate(

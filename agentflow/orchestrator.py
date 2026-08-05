@@ -241,7 +241,7 @@ class Orchestrator:
                 node.model = default_model
             injected_nodes.append(node.id)
 
-        pi_defaults = record.pipeline.agent_defaults.setdefault(AgentKind.PI, {})
+        pi_defaults = record.pipeline.agent_defaults.setdefault(AgentKind.PI.value, {})
         pi_defaults.setdefault("provider", provider.model_dump(mode="json"))
         pi_defaults.setdefault("model", default_model)
 

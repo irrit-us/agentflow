@@ -240,11 +240,11 @@ def _normalize_inference_setup(value: InferenceSetup | dict[str, Any]) -> dict[s
 
 def _normalize_agent_defaults(
     defaults: dict[str | AgentKind, dict[str, Any]] | None,
-) -> dict[str | AgentKind, dict[str, Any]] | None:
+) -> dict[str, dict[str, Any]] | None:
     if defaults is None:
         return None
     return {
-        agent: _normalize_node_kwargs(agent_defaults)
+        (agent.value if isinstance(agent, AgentKind) else str(agent)): _normalize_node_kwargs(agent_defaults)
         for agent, agent_defaults in defaults.items()
     }
 

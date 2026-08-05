@@ -1366,24 +1366,25 @@ def apply_node_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     )
     raw_agent_defaults = resolved.get("agent_defaults")
     if raw_agent_defaults is None:
-        agent_defaults: dict[AgentKind, dict[str, Any]] = {}
+        agent_defaults: dict[str, dict[str, Any]] = {}
     else:
         if not isinstance(raw_agent_defaults, dict):
             raise ValueError("`agent_defaults` must be an object keyed by agent name")
         agent_defaults = {}
         for raw_agent, defaults in raw_agent_defaults.items():
-            try:
-                agent = raw_agent if isinstance(raw_agent, AgentKind) else AgentKind(str(raw_agent).strip())
-            except ValueError as exc:
-                supported = ", ".join(f"`{agent.value}`" for agent in AgentKind)
-                raise ValueError(f"`agent_defaults` has unknown agent `{raw_agent}`; supported keys: {supported}") from exc
+            key = raw_agent.value if isinstance(raw_agent, AgentKind) else str(raw_agent).strip()
+            if not key:
+                raise ValueError("`agent_defaults` keys must be non-empty agent names")
+            builtin = builtin_agent_kind(key)
+            if builtin is not None:
+                key = builtin.value
             normalized = _node_default_payload(
                 defaults,
-                subject=f"agent_defaults.{agent.value}",
+                subject=f"agent_defaults.{key}",
                 allow_agent=False,
             )
             if normalized is not None:
-                agent_defaults[agent] = normalized
+                agent_defaults[key] = normalized
 
     if node_defaults is None and not agent_defaults:
         return resolved
@@ -1402,15 +1403,15 @@ def apply_node_defaults(payload: dict[str, Any]) -> dict[str, Any]:
         raw_agent = node.get("agent", merged_node.get("agent"))
         if raw_agent is not None:
             agent = builtin_agent_kind(raw_agent)
-            if agent is not None:
-                merged_node = _merge_node_payloads(merged_node, agent_defaults.get(agent, {}))
+            key = agent.value if agent is not None else str(raw_agent).strip()
+            merged_node = _merge_node_payloads(merged_node, agent_defaults.get(key, {}))
         merged_nodes.append(_merge_node_payloads(merged_node, dict(node)))
 
     resolved["nodes"] = merged_nodes
     if node_defaults is not None:
         resolved["node_defaults"] = node_defaults
     if agent_defaults:
-        resolved["agent_defaults"] = {agent.value: defaults for agent, defaults in agent_defaults.items()}
+        resolved["agent_defaults"] = {key: defaults for key, defaults in agent_defaults.items()}
     return resolved
 
 
@@ -1496,7 +1497,7 @@ class PipelineSpec(BaseModel):
     scratchboard: bool = False
     use_worktree: bool = False
     node_defaults: dict[str, Any] | None = None
-    agent_defaults: dict[AgentKind, dict[str, Any]] = Field(default_factory=dict)
+    agent_defaults: dict[str, dict[str, Any]] = Field(default_factory=dict)
     local_target_defaults: LocalTarget | None = None
     inference: InferenceSetupSpec | None = None
     fanouts: dict[str, list[str]] = Field(default_factory=dict)
