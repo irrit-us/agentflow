@@ -161,6 +161,8 @@ def test_orchestrator_retries_invalid_optimized_pipeline_with_error_context(tmp_
     attempt_state = {"count": 0}
 
     def fake_optimizer(_optimizer, *, prompt: str, repo_dir: Path, runtime_dir: Path, env: dict[str, str]):
+        if "diagnosing" in prompt:
+            return CommandExecution(command="optimizer", exit_code=0, stdout='{"bottleneck_agent": "plan"}', stderr="")
         prompts.append(prompt)
         attempt_state["count"] += 1
         pipeline_path = repo_dir / "pipeline.py"
