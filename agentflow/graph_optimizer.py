@@ -135,12 +135,40 @@ def render_graph_optimizer_prompt(
     attempt_number: int = 1,
     max_attempts: int = GRAPH_OPTIMIZER_MAX_ATTEMPTS,
     previous_failure: str | None = None,
+    diagnosis: dict[str, str] | None = None,
+    archive: list[dict[str, Any]] | None = None,
 ) -> str:
     failure_section = ""
     if previous_failure:
         failure_section = (
             "\nPrevious optimizer/load failure to fix before finishing:\n"
             f"{previous_failure}\n"
+        )
+    diagnosis_section = ""
+    if diagnosis:
+        diagnosis_section = (
+            "\nDiagnosis of the latest round (structured failure analysis):\n"
+            f"- Bottleneck agent: {diagnosis.get('bottleneck_agent', '')}\n"
+            f"- Intended behavior: {diagnosis.get('intended_behavior', '')}\n"
+            f"- Actual execution: {diagnosis.get('actual_execution', '')}\n"
+            f"- Corrective edit to apply: {diagnosis.get('corrective_edit', '')}\n"
+        )
+    archive_section = ""
+    if archive:
+        archive_lines: list[str] = []
+        for entry in archive:
+            if entry.get("full"):
+                entry_diagnosis = entry.get("diagnosis") or {}
+                corrective = (entry_diagnosis.get("corrective_edit") or "see diagnosis.json").strip()
+                archive_lines.append(
+                    f"- round {entry['round']} (score {entry['score']}, full): report {entry.get('graph_report')}; corrective edit: {corrective}"
+                )
+            else:
+                archive_lines.append(f"- {entry.get('summary', '')}")
+        archive_section = (
+            "\nOptimization archive (avoid re-proposing edits that already failed):\n"
+            + "\n".join(archive_lines)
+            + "\n"
         )
 
     return (
@@ -151,6 +179,8 @@ def render_graph_optimizer_prompt(
         f"Graph report JSON: {graph_report_path}\n"
         f"Copied node traces directory: {traces_dir}\n"
         f"{failure_section}\n"
+        f"{diagnosis_section}\n"
+        f"{archive_section}\n"
         "Goal:\n"
         "- Improve the next round of graph execution using evidence from the graph report and copied traces.\n"
         "- Prefer changes that materially improve correctness, reliability, latency, or coordination quality.\n"
@@ -277,3 +307,88 @@ def compute_run_score(pipeline: PipelineSpec, record: RunRecord) -> float:
             return float(output.split()[-1])
     except Exception:
         return 0.0
+
+
+DIAGNOSIS_PROMPT_FILENAME = "diagnosis-prompt.txt"
+DIAGNOSIS_FILENAME = "diagnosis.json"
+ARCHIVE_WINDOW_SIZE = 3
+DIAGNOSIS_FIELDS = ("bottleneck_agent", "intended_behavior", "actual_execution", "corrective_edit")
+
+
+def render_diagnosis_prompt(
+    *,
+    optimizer: str,
+    pipeline_path: Path,
+    graph_report_path: Path,
+    traces_dir: Path,
+    round_number: int,
+    score: float,
+) -> str:
+    return (
+        f"You are diagnosing why an AgentFlow graph underperformed, using `{optimizer}`.\n"
+        f"Round: {round_number}\n"
+        f"Pipeline file: {pipeline_path}\n"
+        f"Graph report JSON: {graph_report_path}\n"
+        f"Copied node traces directory: {traces_dir}\n"
+        f"Round score: {score}\n"
+        "\n"
+        "Read the graph report and the copied traces, then identify which agent (or which\n"
+        "interaction between agents) most directly explains the gap between the intended\n"
+        "outcome and the observed execution. The corrective edit must target the harness\n"
+        "(agent prompts, tool bindings, topology, or coordination protocol), never the\n"
+        "target program's source code or test inputs.\n"
+        "\n"
+        "Respond with ONLY a JSON object with these four fields:\n"
+        '{"bottleneck_agent": "...", "intended_behavior": "...", "actual_execution": "...", "corrective_edit": "..."}\n'
+    )
+
+
+def parse_diagnosis(text: str) -> dict[str, str] | None:
+    """Extract a structured four-field diagnosis from agent output."""
+    if not text:
+        return None
+    candidates = [text.strip()]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(payload, dict) and any(field in payload for field in DIAGNOSIS_FIELDS):
+            return {field: str(payload.get(field, "")) for field in DIAGNOSIS_FIELDS}
+    return None
+
+
+def summarize_archive_entry(entry: dict[str, Any]) -> str:
+    diagnosis = entry.get("diagnosis") or {}
+    corrective_lines = str(diagnosis.get("corrective_edit") or "").strip().splitlines()
+    suffix = f" — {corrective_lines[0]}" if corrective_lines else ""
+    return f"round {entry['round']}: score {entry['score']}{suffix}"
+
+
+def archive_window(
+    archive: list[dict[str, Any]],
+    *,
+    best_round: int | None,
+    window: int = ARCHIVE_WINDOW_SIZE,
+) -> list[dict[str, Any]]:
+    """Fixed-size archive view: best round + most recent `window` rounds in full,
+    older entries compressed to one-line summaries (paper Section 5.3)."""
+    full_rounds = {entry["round"] for entry in archive[-window:]}
+    if best_round is not None:
+        full_rounds.add(best_round)
+    result: list[dict[str, Any]] = []
+    for entry in archive:
+        full = entry["round"] in full_rounds
+        item: dict[str, Any] = {"round": entry["round"], "score": entry["score"], "full": full}
+        if full:
+            item["diagnosis"] = entry.get("diagnosis")
+            item["graph_report"] = entry.get("graph_report")
+            item["pipeline"] = entry.get("pipeline")
+        else:
+            item["summary"] = summarize_archive_entry(entry)
+        result.append(item)
+    return result

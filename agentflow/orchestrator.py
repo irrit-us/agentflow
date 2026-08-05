@@ -29,10 +29,15 @@ from agentflow.graph_optimizer import (
     OPTIMIZER_PROMPT_FILENAME,
     OPTIMIZER_RESULT_FILENAME,
     OPTIMIZER_VALIDATION_FILENAME,
+    DIAGNOSIS_FILENAME,
+    DIAGNOSIS_PROMPT_FILENAME,
+    archive_window,
     build_graph_report,
     compute_run_score,
     copy_run_traces,
     load_child_pipeline_from_path,
+    parse_diagnosis,
+    render_diagnosis_prompt,
     render_graph_optimizer_prompt,
     write_editable_pipeline_python,
     write_optimizer_result,
@@ -384,6 +389,7 @@ class Orchestrator:
         best_score = 0.0
         best_pipeline: PipelineSpec | None = None
         round_scores: list[dict[str, object]] = []
+        archive: list[dict[str, object]] = []
 
         def _optimizer_failure_summary(
             label: str,
@@ -499,6 +505,60 @@ class Orchestrator:
             if round_number >= current_pipeline.n_run or self._should_cancel(parent_run_id):
                 continue
 
+            # Diagnose (paper Section 5.4): a structured four-field failure
+            # analysis that feeds the next proposal, then archive the round.
+            diagnosis_prompt = render_diagnosis_prompt(
+                optimizer=optimizer_name,
+                pipeline_path=pipeline_path,
+                graph_report_path=round_dir / GRAPH_REPORT_FILENAME,
+                traces_dir=traces_dir,
+                round_number=round_number,
+                score=round_score,
+            )
+            (round_dir / DIAGNOSIS_PROMPT_FILENAME).write_text(diagnosis_prompt, encoding="utf-8")
+            await self._publish(parent_run_id, "optimization_diagnosis_started", round_number=round_number)
+            diagnosis_result = _run_optimizer(
+                optimizer_kind,
+                prompt=diagnosis_prompt,
+                repo_dir=round_dir,
+                runtime_dir=round_dir / "diagnosis-runtime",
+                env={},
+            )
+            diagnosis = parse_diagnosis(diagnosis_result.stdout) if diagnosis_result.exit_code == 0 else None
+            (round_dir / DIAGNOSIS_FILENAME).write_text(
+                json.dumps(
+                    {"diagnosis": diagnosis, "raw_stdout": diagnosis_result.stdout},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            archive.append(
+                {
+                    "round": round_number,
+                    "score": round_score,
+                    "diagnosis": diagnosis,
+                    "graph_report": str(round_dir / GRAPH_REPORT_FILENAME),
+                    "pipeline": str(pipeline_path),
+                }
+            )
+            optimization_session["archive"] = [
+                {
+                    "round": entry["round"],
+                    "score": entry["score"],
+                    "corrective_edit": (entry["diagnosis"] or {}).get("corrective_edit", ""),
+                }
+                for entry in archive
+            ]
+            parent.optimization_session = optimization_session
+            await self._publish(
+                parent_run_id,
+                "optimization_diagnosis_completed",
+                round_number=round_number,
+                diagnosis=diagnosis,
+            )
+            await self.store.persist_run(parent_run_id)
+
             failure_summary: str | None = None
             loaded_pipeline: PipelineSpec | None = None
             for attempt_number in range(1, GRAPH_OPTIMIZER_MAX_ATTEMPTS + 1):
@@ -513,6 +573,11 @@ class Orchestrator:
                     attempt_number=attempt_number,
                     max_attempts=GRAPH_OPTIMIZER_MAX_ATTEMPTS,
                     previous_failure=failure_summary,
+                    diagnosis=diagnosis,
+                    archive=archive_window(
+                        archive,
+                        best_round=optimization_session.get("best_round"),
+                    ),
                 )
                 (attempt_dir / OPTIMIZER_PROMPT_FILENAME).write_text(prompt, encoding="utf-8")
                 (round_dir / OPTIMIZER_PROMPT_FILENAME).write_text(prompt, encoding="utf-8")

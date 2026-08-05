@@ -212,6 +212,8 @@ def test_orchestrator_fails_when_optimized_pipeline_is_invalid(tmp_path, monkeyp
     attempt_state = {"count": 0}
 
     def fake_optimizer(_optimizer, *, prompt: str, repo_dir: Path, runtime_dir: Path, env: dict[str, str]):
+        if "diagnosing" in prompt:
+            return CommandExecution(command="optimizer", exit_code=0, stdout='{"bottleneck_agent": "plan"}', stderr="")
         attempt_state["count"] += 1
         pipeline_path = repo_dir / "pipeline.py"
         pipeline_path.write_text("from __future__ import annotations\n\nthis is not valid python\n", encoding="utf-8")
@@ -420,3 +422,113 @@ def test_optimization_session_keeps_incumbent_pipeline(tmp_path, monkeypatch):
     best_path = Path(session["best_pipeline_path"])
     assert best_path.exists()
     assert "round one" in best_path.read_text(encoding="utf-8")
+
+
+def test_parse_diagnosis_extracts_four_fields():
+    from agentflow.graph_optimizer import parse_diagnosis
+
+    raw = 'Some reasoning...\n{"bottleneck_agent": "crafter", "intended_behavior": "craft valid HEIF", "actual_execution": "parser rejected file", "corrective_edit": "seed from a real file"}\nTrailing'
+    diagnosis = parse_diagnosis(raw)
+    assert diagnosis == {
+        "bottleneck_agent": "crafter",
+        "intended_behavior": "craft valid HEIF",
+        "actual_execution": "parser rejected file",
+        "corrective_edit": "seed from a real file",
+    }
+    assert parse_diagnosis("no json at all") is None
+    assert parse_diagnosis('{"unrelated": true}') is None
+    assert parse_diagnosis("") is None
+
+
+def test_archive_window_keeps_best_and_recent_full():
+    from agentflow.graph_optimizer import archive_window
+
+    archive = [
+        {"round": index, "score": float(index), "diagnosis": {"corrective_edit": f"edit {index}"}, "graph_report": f"r{index}.json", "pipeline": f"p{index}.py"}
+        for index in range(1, 7)
+    ]
+    window = archive_window(archive, best_round=2)
+
+    full_rounds = {entry["round"] for entry in window if entry["full"]}
+    assert full_rounds == {2, 4, 5, 6}
+    summarized = [entry for entry in window if not entry["full"]]
+    assert [entry["round"] for entry in summarized] == [1, 3]
+    assert summarized[0]["summary"].startswith("round 1: score 1.0")
+
+
+def test_optimizer_prompt_includes_diagnosis_and_archive(tmp_path):
+    prompt = render_graph_optimizer_prompt(
+        optimizer="codex",
+        pipeline_path=tmp_path / "pipeline.py",
+        graph_report_path=tmp_path / "graph_report.json",
+        traces_dir=tmp_path / "traces",
+        round_number=2,
+        total_rounds=3,
+        diagnosis={
+            "bottleneck_agent": "crafter",
+            "intended_behavior": "craft inputs",
+            "actual_execution": "format rejected",
+            "corrective_edit": "start from a seed file",
+        },
+        archive=[
+            {"round": 1, "score": 0.0, "full": True, "diagnosis": {"corrective_edit": "start from a seed file"}, "graph_report": "r1.json", "pipeline": "p1.py"},
+        ],
+    )
+
+    assert "Bottleneck agent: crafter" in prompt
+    assert "Corrective edit to apply: start from a seed file" in prompt
+    assert "Optimization archive" in prompt
+    assert "round 1 (score 0.0, full)" in prompt
+
+
+def test_optimization_session_diagnosis_feeds_next_proposal(tmp_path, monkeypatch):
+    from agentflow.agents.registry import AdapterRegistry
+    from agentflow.orchestrator import Orchestrator
+    from agentflow.runners.registry import RunnerRegistry
+    from agentflow.specs import AgentKind
+    from agentflow.store import RunStore
+
+    adapters = AdapterRegistry()
+    adapters.register(AgentKind.CODEX, _RoundSensitiveAdapter())
+    orchestrator = Orchestrator(store=RunStore(tmp_path / "runs"), adapters=adapters, runners=RunnerRegistry())
+    captured: dict[str, object] = {"edit_prompts": []}
+
+    def fake_optimizer(_optimizer, *, prompt: str, repo_dir: Path, runtime_dir: Path, env: dict[str, str]):
+        if "diagnosing" in prompt:
+            return CommandExecution(
+                command="optimizer",
+                exit_code=0,
+                stdout='{"bottleneck_agent": "probe", "intended_behavior": "pass", "actual_execution": "failed", "corrective_edit": "rewrite the probe prompt"}',
+                stderr="",
+            )
+        captured["edit_prompts"].append(prompt)
+        pipeline_path = repo_dir / "pipeline.py"
+        text = pipeline_path.read_text(encoding="utf-8")
+        pipeline_path.write_text(text.replace("round one", "round two"), encoding="utf-8")
+        return CommandExecution(command="optimizer", exit_code=0, stdout="updated pipeline", stderr="")
+
+    monkeypatch.setattr("agentflow.orchestrator._run_optimizer", fake_optimizer)
+
+    pipeline = PipelineSpec.model_validate(
+        {
+            "name": "diagnosis-opt",
+            "working_dir": str(tmp_path),
+            "optimizer": "codex",
+            "n_run": 2,
+            "nodes": [{"id": "probe", "agent": "codex", "prompt": "round one"}],
+        }
+    )
+
+    run = asyncio.run(orchestrator.submit(pipeline))
+    completed = asyncio.run(orchestrator.wait(run.id, timeout=60))
+
+    assert completed.status == RunStatus.COMPLETED
+    assert captured["edit_prompts"], "optimizer edit prompt was never captured"
+    edit_prompt = captured["edit_prompts"][0]
+    assert "Bottleneck agent: probe" in edit_prompt
+    assert "Corrective edit to apply: rewrite the probe prompt" in edit_prompt
+    session = completed.optimization_session
+    assert session["archive"][0]["corrective_edit"] == "rewrite the probe prompt"
+    run_dir = Path(session["latest_pipeline_path"]).parent.parent
+    diagnosis_payload = json.loads((run_dir / "round-001" / "diagnosis.json").read_text(encoding="utf-8"))
+    assert diagnosis_payload["diagnosis"]["bottleneck_agent"] == "probe"
