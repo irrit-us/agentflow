@@ -17,7 +17,11 @@ except ImportError:  # pragma: no cover - Python < 3.11
 from itertools import product
 from pathlib import Path
 from typing import Annotated, Any, Literal
+import warnings
 
+from jinja2 import Environment
+from jinja2 import meta as jinja_meta
+from jinja2 import nodes as jinja_nodes
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agentflow.local_shell import (
@@ -1483,6 +1487,121 @@ def apply_local_target_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
+def _template_id_references(prompt: str) -> tuple[set[str], set[str], set[str]]:
+    """Extract template references from a node prompt.
+
+    Returns `(node_ids, fanout_group_ids, top_level_names)` referenced via
+    `{{ nodes.<id>.* }}`, `{{ fanouts.<id>.* }}`, and any free top-level name.
+    Non-constant subscripts (e.g. `nodes[dynamic]`) are ignored: they cannot
+    be resolved statically and stay a runtime concern.
+    """
+    try:
+        ast = Environment().parse(prompt or "")
+    except Exception:
+        # Syntax errors surface at render time; nothing to check statically.
+        return set(), set(), set()
+
+    def _resolve(expr: Any) -> tuple[str | None, list[str]]:
+        parts: list[str] = []
+        while True:
+            if isinstance(expr, jinja_nodes.Getattr):
+                parts.append(expr.attr)
+                expr = expr.node
+            elif (
+                isinstance(expr, jinja_nodes.Getitem)
+                and isinstance(expr.arg, jinja_nodes.Const)
+                and isinstance(expr.arg.value, str)
+            ):
+                parts.append(expr.arg.value)
+                expr = expr.node
+            else:
+                break
+        if isinstance(expr, jinja_nodes.Name) and parts:
+            return expr.name, list(reversed(parts))
+        return None, []
+
+    node_refs: set[str] = set()
+    fanout_refs: set[str] = set()
+    for expr in ast.find_all((jinja_nodes.Getattr, jinja_nodes.Getitem)):
+        root, path = _resolve(expr)
+        if not path:
+            continue
+        if root == "nodes":
+            node_refs.add(path[0])
+        elif root == "fanouts":
+            fanout_refs.add(path[0])
+    top_level = set(jinja_meta.find_undeclared_variables(ast))
+    return node_refs, fanout_refs, top_level
+
+
+def _validate_well_formedness(pipeline: "PipelineSpec") -> None:
+    """Static well-formedness checks for pipeline programs (paper Section 4.2).
+
+    - T-Agent (error): every `nodes.<id>` / `fanouts.<id>` template reference
+      resolves to a declared node / fanout group, so no agent is ever
+      dispatched with an unbound template variable.
+    - T-Edge (warning): a declared dependency whose output the downstream
+      prompt never reads is flagged (fanout-group and `item.scope`
+      aggregations count as references).
+    - T-Conn (warning): nodes unreachable from any source node (source-less
+      components) are flagged; cycles remain legal for retry loops.
+    """
+    ids = {node.id for node in pipeline.nodes}
+    fanout_groups = set(pipeline.fanouts)
+    group_by_member = {
+        member_id: group_id
+        for group_id, members in pipeline.fanouts.items()
+        for member_id in members
+    }
+
+    unreferenced_edges: list[str] = []
+    for node in pipeline.nodes:
+        node_refs, fanout_refs, top_level = _template_id_references(node.prompt)
+        unknown_nodes = node_refs - ids
+        if unknown_nodes:
+            raise ValueError(
+                f"node {node.id!r} prompt references unknown nodes: {sorted(unknown_nodes)}"
+            )
+        unknown_fanouts = fanout_refs - fanout_groups
+        if unknown_fanouts:
+            raise ValueError(
+                f"node {node.id!r} prompt references unknown fanout groups: {sorted(unknown_fanouts)}"
+            )
+        for dependency in dict.fromkeys(node.depends_on):
+            if dependency in node_refs:
+                continue
+            group = group_by_member.get(dependency)
+            if group is not None and (group in fanout_refs or "item" in top_level):
+                continue
+            unreferenced_edges.append(f"`{dependency}` -> `{node.id}`")
+
+    # T-Conn: nodes unreachable from any source (in-degree 0) node.
+    sources = [node.id for node in pipeline.nodes if not node.depends_on]
+    reachable: set[str] = set()
+    stack = list(sources)
+    dependents: dict[str, list[str]] = {}
+    for node in pipeline.nodes:
+        for dependency in node.depends_on:
+            dependents.setdefault(dependency, []).append(node.id)
+    while stack:
+        current = stack.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        stack.extend(dependents.get(current, []))
+    unreachable = sorted(ids - reachable)
+
+    messages: list[str] = []
+    if unreferenced_edges:
+        messages.append(
+            "dependencies never referenced by the downstream prompt: " + ", ".join(unreferenced_edges)
+        )
+    if unreachable:
+        messages.append(f"nodes unreachable from any source node: {unreachable}")
+    if messages:
+        warnings.warn(f"pipeline {pipeline.name!r} well-formedness: " + "; ".join(messages), stacklevel=2)
+
+
 class PipelineSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1571,6 +1690,7 @@ class PipelineSpec(BaseModel):
                 raise ValueError(
                     f"scheduled node {node.id!r} must appear after the watched fanout group `{watched_group}`"
                 )
+        _validate_well_formedness(self)
         return self
 
     @property

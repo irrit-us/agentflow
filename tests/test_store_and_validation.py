@@ -1818,3 +1818,109 @@ def test_store_expands_user_in_base_dir(tmp_path, monkeypatch):
 
     assert store.base_dir == home / "agentflow-runs"
     assert store.base_dir.exists()
+
+
+def test_pipeline_validation_rejects_unknown_node_template_references():
+    with pytest.raises(ValueError, match="references unknown nodes"):
+        PipelineSpec.model_validate(
+            {
+                "name": "bad-node-ref",
+                "working_dir": ".",
+                "nodes": [
+                    {"id": "plan", "agent": "codex", "prompt": "plan"},
+                    {
+                        "id": "review",
+                        "agent": "codex",
+                        "depends_on": ["plan"],
+                        "prompt": "review {{ nodes.plna.output }}",
+                    },
+                ],
+            }
+        )
+
+
+def test_pipeline_validation_rejects_unknown_fanout_template_references():
+    with pytest.raises(ValueError, match="references unknown fanout groups"):
+        PipelineSpec.model_validate(
+            {
+                "name": "bad-fanout-ref",
+                "working_dir": ".",
+                "nodes": [
+                    {"id": "merge", "agent": "codex", "prompt": "merge {{ fanouts.workr.outputs }}"},
+                ],
+            }
+        )
+
+
+def test_pipeline_validation_accepts_valid_node_references():
+    pipeline = PipelineSpec.model_validate(
+        {
+            "name": "good-node-ref",
+            "working_dir": ".",
+            "nodes": [
+                {"id": "plan", "agent": "codex", "prompt": "plan"},
+                {
+                    "id": "review",
+                    "agent": "codex",
+                    "depends_on": ["plan"],
+                    "prompt": "review {{ nodes.plan.output }} and {{ nodes['plan'].status }}",
+                },
+            ],
+        }
+    )
+    assert pipeline.node_map["review"].depends_on == ["plan"]
+
+
+def test_pipeline_validation_warns_on_unreferenced_dependency_edge():
+    with pytest.warns(UserWarning, match="never referenced by the downstream prompt"):
+        PipelineSpec.model_validate(
+            {
+                "name": "ordering-only-edge",
+                "working_dir": ".",
+                "nodes": [
+                    {"id": "plan", "agent": "codex", "prompt": "plan"},
+                    {"id": "review", "agent": "codex", "depends_on": ["plan"], "prompt": "review"},
+                ],
+            }
+        )
+
+
+def test_pipeline_validation_warns_on_source_less_component():
+    with pytest.warns(UserWarning, match="unreachable from any source node"):
+        PipelineSpec.model_validate(
+            {
+                "name": "cycle",
+                "working_dir": ".",
+                "nodes": [
+                    {"id": "a", "agent": "codex", "prompt": "a", "depends_on": ["b"]},
+                    {"id": "b", "agent": "codex", "prompt": "b", "depends_on": ["a"]},
+                ],
+            }
+        )
+
+
+def test_pipeline_validation_fanout_group_reference_satisfies_edge():
+    import warnings as _warnings
+
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("error")
+        PipelineSpec.model_validate(
+            {
+                "name": "fanout-edge-ok",
+                "working_dir": ".",
+                "nodes": [
+                    {
+                        "id": "worker",
+                        "fanout": {"count": 2, "as": "shard"},
+                        "agent": "codex",
+                        "prompt": "work {{ shard.number }}",
+                    },
+                    {
+                        "id": "merge",
+                        "agent": "codex",
+                        "depends_on": ["worker"],
+                        "prompt": "merge {{ fanouts.worker.outputs }}",
+                    },
+                ],
+            }
+        )
