@@ -7,6 +7,25 @@ from agentflow.skills import compile_skill_prelude
 from agentflow.specs import NodeResult, NodeSpec, NodeStatus, PipelineSpec, normalize_agent_name
 from agentflow.utils import render_template
 
+TRUNCATION_MARKER = "[agentflow: value truncated to {limit} of {total} chars to bound prompt size]"
+_TRUNCATED_VALUE_FIELDS = ("output", "final_response", "stdout", "stderr", "diff")
+
+
+def _truncate_value(
+    value: Any,
+    *,
+    limit: int | None,
+    node_id: str,
+    field: str,
+    truncation_log: list[dict[str, Any]] | None,
+) -> Any:
+    if limit is None or not isinstance(value, str) or len(value) <= limit:
+        return value
+    if truncation_log is not None:
+        truncation_log.append({"node_id": node_id, "field": field, "total_chars": len(value), "limit": limit})
+    marker = TRUNCATION_MARKER.format(limit=limit, total=len(value))
+    return value[:limit] + "\n" + marker
+
 
 def _artifact_paths_context(*, run_id: str, artifacts_base_dir: Path, node_id: str) -> dict[str, Any]:
     artifact_dir = artifacts_base_dir.expanduser().resolve() / run_id / "artifacts" / node_id
@@ -26,6 +45,8 @@ def _node_result_context(
     *,
     run_id: str | None = None,
     artifacts_base_dir: Path | None = None,
+    max_value_chars: int | None = None,
+    truncation_log: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     context = {
         "status": result.status.value,
@@ -36,6 +57,14 @@ def _node_result_context(
         "trace": [event.model_dump(mode="json") for event in result.trace_events],
         "diff": getattr(result, "diff", ""),
     }
+    for field in _TRUNCATED_VALUE_FIELDS:
+        context[field] = _truncate_value(
+            context[field],
+            limit=max_value_chars,
+            node_id=result.node_id,
+            field=field,
+            truncation_log=truncation_log,
+        )
     if run_id is not None and artifacts_base_dir is not None:
         context["artifacts"] = _artifact_paths_context(
             run_id=run_id,
@@ -97,6 +126,8 @@ def _fanout_member_context(
     results: dict[str, NodeResult],
     run_id: str | None = None,
     artifacts_base_dir: Path | None = None,
+    max_value_chars: int | None = None,
+    truncation_log: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     result = results.get(member_id, NodeResult(node_id=member_id))
     member_context = {
@@ -105,6 +136,8 @@ def _fanout_member_context(
             result,
             run_id=run_id,
             artifacts_base_dir=artifacts_base_dir,
+            max_value_chars=max_value_chars,
+            truncation_log=truncation_log,
         ),
     }
     pipeline_node = pipeline_nodes.get(member_id)
@@ -153,6 +186,8 @@ def build_render_context(
     artifacts_base_dir: Path | None = None,
     current_tick_number: int | None = None,
     current_tick_started_at: str | None = None,
+    max_value_chars: int | None = None,
+    truncation_log: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     nodes: dict[str, Any] = {}
     for node_id, result in results.items():
@@ -160,6 +195,8 @@ def build_render_context(
             result,
             run_id=run_id,
             artifacts_base_dir=artifacts_base_dir,
+            max_value_chars=max_value_chars,
+            truncation_log=truncation_log,
         )
 
     pipeline_nodes = pipeline.node_map
@@ -174,6 +211,8 @@ def build_render_context(
                 results=results,
                 run_id=run_id,
                 artifacts_base_dir=artifacts_base_dir,
+                max_value_chars=max_value_chars,
+                truncation_log=truncation_log,
             )
             for member_id in member_ids
         ]
@@ -202,6 +241,8 @@ def build_render_context(
                         results=results,
                         run_id=run_id,
                         artifacts_base_dir=artifacts_base_dir,
+                        max_value_chars=max_value_chars,
+                        truncation_log=truncation_log,
                     )
                 scoped_nodes.append(member_context)
             current_context["scope"] = _fanout_context(scoped_nodes)
@@ -218,6 +259,7 @@ def render_node_prompt(
     artifacts_base_dir: Path | None = None,
     current_tick_number: int | None = None,
     current_tick_started_at: str | None = None,
+    truncation_log: list[dict[str, Any]] | None = None,
 ) -> str:
     context = build_render_context(
         pipeline,
@@ -227,6 +269,8 @@ def render_node_prompt(
         artifacts_base_dir=artifacts_base_dir,
         current_tick_number=current_tick_number,
         current_tick_started_at=current_tick_started_at,
+        max_value_chars=pipeline.max_template_value_chars,
+        truncation_log=truncation_log,
     )
     prompt = render_template(node.prompt, context)
     skill_prelude = compile_skill_prelude(node.skills, pipeline.working_path)

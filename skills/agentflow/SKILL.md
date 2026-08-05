@@ -288,8 +288,9 @@ Graph("name",
     max_iterations=10,       # cycle iteration limit
     scratchboard=False,      # shared memory file
     use_worktree=False,      # git worktree per agent
+    max_template_value_chars=None,  # truncate oversized {{ nodes.x.* }} values (None = unlimited)
     node_defaults={...},     # defaults for all nodes
-    agent_defaults={...},    # per-agent defaults
+    agent_defaults={...},    # per-agent defaults (built-in kinds or custom agent names)
 )
 ```
 

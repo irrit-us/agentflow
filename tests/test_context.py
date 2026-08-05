@@ -424,3 +424,69 @@ def test_render_node_prompt_can_use_artifact_paths_and_tick_metadata(tmp_path: P
 
     assert rendered.endswith("/run123/artifacts/worker_0/stdout.log")
     assert rendered.startswith("tick=1 ")
+
+
+def test_render_node_prompt_truncates_oversized_template_values(tmp_path):
+    pipeline = load_pipeline_from_data(
+        {
+            "name": "truncate-context",
+            "working_dir": str(tmp_path),
+            "max_template_value_chars": 50,
+            "nodes": [
+                {"id": "plan", "agent": "codex", "prompt": "plan"},
+                {"id": "review", "agent": "codex", "depends_on": ["plan"], "prompt": "review {{ nodes.plan.output }}"},
+            ],
+        },
+        base_dir=tmp_path,
+    )
+    results = {
+        "plan": NodeResult(node_id="plan", status=NodeStatus.COMPLETED, output="x" * 100),
+    }
+    truncation_log: list[dict[str, object]] = []
+
+    prompt = render_node_prompt(pipeline, pipeline.node_map["review"], results, truncation_log=truncation_log)
+
+    assert "x" * 50 in prompt
+    assert "x" * 100 not in prompt
+    assert "truncated to 50 of 100 chars" in prompt
+    assert truncation_log == [{"node_id": "plan", "field": "output", "total_chars": 100, "limit": 50}]
+
+
+def test_render_node_prompt_keeps_values_when_no_limit_configured(tmp_path):
+    pipeline = load_pipeline_from_data(
+        {
+            "name": "no-truncate-context",
+            "working_dir": str(tmp_path),
+            "nodes": [
+                {"id": "plan", "agent": "codex", "prompt": "plan"},
+                {"id": "review", "agent": "codex", "depends_on": ["plan"], "prompt": "review {{ nodes.plan.output }}"},
+            ],
+        },
+        base_dir=tmp_path,
+    )
+    results = {
+        "plan": NodeResult(node_id="plan", status=NodeStatus.COMPLETED, output="x" * 100),
+    }
+    truncation_log: list[dict[str, object]] = []
+
+    prompt = render_node_prompt(pipeline, pipeline.node_map["review"], results, truncation_log=truncation_log)
+
+    assert "x" * 100 in prompt
+    assert truncation_log == []
+
+
+def test_render_node_prompt_truncates_fanout_scope_outputs(tmp_path):
+    pipeline = _fanout_pipeline(tmp_path)
+    pipeline = pipeline.model_copy(update={"max_template_value_chars": 20})
+    results = {
+        "worker_1": NodeResult(node_id="worker_1", status=NodeStatus.COMPLETED, output="y" * 60),
+        "worker_2": NodeResult(node_id="worker_2", status=NodeStatus.COMPLETED, output="ok"),
+        "worker_3": NodeResult(node_id="worker_3", status=NodeStatus.COMPLETED, output="ok"),
+    }
+    truncation_log: list[dict[str, object]] = []
+
+    prompt = render_node_prompt(pipeline, pipeline.node_map["merge"], results, truncation_log=truncation_log)
+
+    assert "y" * 60 not in prompt
+    assert "truncated to 20 of 60 chars" in prompt
+    assert any(entry["node_id"] == "worker_1" for entry in truncation_log)

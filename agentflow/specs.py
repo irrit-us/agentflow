@@ -1496,6 +1496,7 @@ class PipelineSpec(BaseModel):
     max_iterations: int = Field(default=10, ge=1)
     scratchboard: bool = False
     use_worktree: bool = False
+    max_template_value_chars: int | None = Field(default=None, gt=0)
     node_defaults: dict[str, Any] | None = None
     agent_defaults: dict[str, dict[str, Any]] = Field(default_factory=dict)
     local_target_defaults: LocalTarget | None = None

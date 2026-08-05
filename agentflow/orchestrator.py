@@ -994,6 +994,7 @@ class Orchestrator:
                 tick_started_at=periodic_tick_started_at,
             )
 
+        truncation_log: list[dict[str, Any]] = []
         prompt = render_node_prompt(
             pipeline,
             node,
@@ -1002,7 +1003,22 @@ class Orchestrator:
             artifacts_base_dir=self.store.base_dir,
             current_tick_number=periodic_tick_number,
             current_tick_started_at=periodic_tick_started_at,
+            truncation_log=truncation_log,
         )
+        if truncation_log:
+            details = ", ".join(
+                f"{entry['node_id']}.{entry['field']} ({entry['total_chars']} > {entry['limit']} chars)"
+                for entry in truncation_log
+            )
+            await self._publish(
+                run_id,
+                "node_trace",
+                node_id=node_id,
+                trace={
+                    "kind": "warning",
+                    "title": f"Template values truncated to bound prompt size: {details}",
+                },
+            )
         execution_resolution = resolve_node_for_execution(node, pipeline.working_path)
         execution_node = execution_resolution.node
         runtime_agent = execution_resolution.runtime_agent
