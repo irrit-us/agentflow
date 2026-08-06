@@ -20,6 +20,7 @@ from agentflow.lite.runner import (
 from agentflow.lite.server import create_app, make_llm_health_probe
 from agentflow.lite.tools import Tool, ToolRegistry, tool
 from agentflow.lite.types import ChatResult, Message, ToolCall, Usage
+from agentflow.lite.volumes import Mount, ensure_volume
 
 __all__ = [
     "AgentResult",
@@ -38,6 +39,7 @@ __all__ = [
     "Message",
     "ModelProfile",
     "ModelRouter",
+    "Mount",
     "NodeRun",
     "NodeSpec",
     "NodeStatus",
@@ -49,6 +51,7 @@ __all__ = [
     "Usage",
     "container_shell_tool",
     "create_app",
+    "ensure_volume",
     "load_graph",
     "make_agent_factory",
     "make_llm_health_probe",

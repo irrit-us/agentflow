@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from agentflow.lite.tools import Tool
+from agentflow.lite.volumes import Mount
 
 _OUTPUT_LIMIT = 50_000
 
@@ -25,7 +26,14 @@ class ExecResult(BaseModel):
 
 
 class ContainerConfig(BaseModel):
-    """Ephemeral container settings with safe defaults for security-audit workloads."""
+    """Ephemeral container settings with safe defaults for security-audit workloads.
+
+    Mounting recipes:
+    - RAG / knowledge base: ``Mount(type="bind", source=..., read_only=True)``
+      for a read-only host directory.
+    - Data transfer between containers: a shared named volume,
+      ``Mount(type="volume", source="shared", ...)`` mounted rw in each container.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -39,6 +47,7 @@ class ContainerConfig(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     timeout: int = 120
     extra_args: list[str] = Field(default_factory=list)
+    mounts: list[Mount] = Field(default_factory=list)
 
 
 def _truncate(text: str) -> str:
@@ -76,6 +85,8 @@ class DockerExecutor:
             argv += ["--memory", config.memory]
         if config.cpus is not None:
             argv += ["--cpus", str(config.cpus)]
+        for mount in config.mounts:
+            argv += ["--mount", mount.to_docker_mount()]
         if config.workspace is not None:
             mode = "ro" if config.read_only else "rw"
             argv += ["-v", f"{config.workspace}:{config.container_workdir}:{mode}"]
