@@ -1,0 +1,20 @@
+# VulnSage: ReAct-scheduled constraint-accumulating exploit generation — small-model alert pre-screening → supervisor dynamic scheduling → constraint-AEG closed loop with sandbox verification → aggregated findings. Source document: 05-synthesis.
+name: vulnsage
+nodes:
+  - id: mini-alert
+    prompt: Lightly pre-screen the target code with a small model, producing a list of candidate vulnerability alerts (mini alerts).
+  - id: supervisor
+    prompt: Schedule alerts one by one in a ReAct manner, dynamically deciding verification order and resource allocation.
+    depends_on: [mini-alert]
+  - id: constraint-aeg-loop
+    prompt: Constraint-accumulating exploit generation closed loop (code-analyzer accumulates natural-language constraints → generator produces an exploit → sandbox execution verifies → reflection turns failures into new constraints); the four-agent loop is folded inside this node and carried by LiteAgent max_iterations, with at most 20 attempts per alert.
+    depends_on: [supervisor]
+    max_iterations: 20
+    container:
+      image: node:22-slim
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: vulnsage-shared, target: /shared}
+  - id: findings
+    prompt: Aggregate verification results across alerts, outputting confirmed vulnerability findings with corresponding exploit evidence.
+    depends_on: [constraint-aeg-loop]

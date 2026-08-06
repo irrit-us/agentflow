@@ -1,0 +1,27 @@
+# FORGE: feedback-driven Dynamic Forest of Agents -- binary ingestion -> root analysis agent -> dynamic child-agent forest -> evidence aggregation -> replay validation. Source document: 01-binary
+name: forge
+nodes:
+  - id: binary-ingest
+    prompt: Decompile and load the target binary, preparing a queryable code view for the analysis agents.
+    container:
+      image: agentflow-tools/re-ghidra:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: forge-shared, target: /shared}
+  - id: root-agent
+    prompt: The root analysis agent performs overall analysis of the binary through AgentTool calls to Radare2 and identifies suspicious points.
+    container:
+      image: radare/radare2:latest
+      mounts:
+        - {type: volume, source: forge-shared, target: /shared}
+  - id: delegate-children
+    prompt: Delegate a dynamic child-agent forest at runtime based on the root agent's findings, each performing in-depth analysis separately; the number and structure of child agents are decided dynamically at runtime and are collapsed into this single node on the static graph.
+  - id: evidence-aggregation
+    prompt: Backward-aggregate the hierarchical evidence objects produced by the child agents into a complete evidence chain.
+  - id: validation-replay
+    prompt: Replay the evidence chain for final validation, confirming that the conclusions are supported by evidence.
+edges:
+  - {from: binary-ingest, to: root-agent}
+  - {from: root-agent, to: delegate-children}
+  - {from: delegate-children, to: evidence-aggregation}
+  - {from: evidence-aggregation, to: validation-replay}

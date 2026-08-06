@@ -1,0 +1,24 @@
+# EMBA pipeline: firmware unpacking -> Ghidra decompilation -> LLM analysis -> report generation. Source document: 01-binary
+name: emba_pipeline
+nodes:
+  - id: emba-extract
+    prompt: Unpack the target firmware and extract the filesystem and executables.
+    container:
+      image: agentflow-tools/firmware-qemu:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: emba-pipeline-shared, target: /shared}
+  - id: ghidra-decompile
+    prompt: Decompile the extracted binaries with Ghidra to produce pseudocode for analysis.
+    container:
+      image: agentflow-tools/re-ghidra:latest
+      mounts:
+        - {type: volume, source: emba-pipeline-shared, target: /shared}
+  - id: llm-analysis
+    prompt: Perform LLM vulnerability analysis on the decompiled output to identify suspicious code and potential vulnerabilities.
+  - id: report
+    prompt: Aggregate the analysis results into a vulnerability audit report.
+edges:
+  - {from: emba-extract, to: ghidra-decompile}
+  - {from: ghidra-decompile, to: llm-analysis}
+  - {from: llm-analysis, to: report}

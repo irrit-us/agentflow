@@ -1,0 +1,21 @@
+# CYBENCH: three-stage evaluation architecture of task environment -> agent solving -> grader. Source document: 01-binary
+name: cybench
+nodes:
+  - id: task-env
+    prompt: Start the cybersecurity task environment, providing the challenge services and initial conditions.
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: volume, source: cybench-shared, target: /shared}
+  - id: agent-solve
+    prompt: The agent interacts with the task environment to solve the challenge and outputs the submitted answer; the inner solving loop is carried by LiteAgent max_iterations.
+    max_iterations: 20
+  - id: grader
+    prompt: The grader automatically scores the submitted answer and outputs pass/fail.
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: volume, source: cybench-shared, target: /shared}
+edges:
+  - {from: task-env, to: agent-solve}
+  - {from: agent-solve, to: grader}

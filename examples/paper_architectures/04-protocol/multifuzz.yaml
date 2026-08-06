@@ -1,0 +1,25 @@
+# MultiFuzz: a retrieval agent supplies protocol knowledge and seeds → multiple fuzz agents fuzz in parallel → crash analysis.
+# Source document: 04-protocol
+name: multifuzz
+nodes:
+  - id: retrieval-agent
+    prompt: Use dense retrieval to extract the target protocol's message formats, state information, and candidate seeds from a protocol knowledge base, feeding the downstream fuzz agents.
+    max_iterations: 6
+  - id: fuzz-agents
+    prompt: Multiple fuzz agents in parallel use the retrieved protocol knowledge and seeds to run coverage-guided fuzzing against the target protocol implementation, with any crashes found written to the shared volume.
+    max_iterations: 12
+    container:
+      image: aflplusplus/aflplusplus:latest
+      network: bridge
+      memory: 2g
+      cpus: 2.0
+      timeout: 900
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: multifuzz-shared, target: /shared}
+  - id: crash-analysis
+    prompt: Analyze the crashes produced by parallel fuzzing, deduplicate and group them by root cause, and output a Chinese-language crash analysis report.
+    max_iterations: 6
+edges:
+  - {from: retrieval-agent, to: fuzz-agents}
+  - {from: fuzz-agents, to: crash-analysis}

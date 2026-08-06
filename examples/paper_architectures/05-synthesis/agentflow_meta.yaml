@@ -1,0 +1,18 @@
+# AgentFlow meta layer: outer loop of automatic harness synthesis — propose with type gate → execute harness → evaluate/diagnose and guide the next proposal round. Source document: 05-synthesis.
+name: agentflow-meta
+nodes:
+  - id: propose-typecheck
+    prompt: Propose new harness candidates based on the previous round's diagnosis, passing them through a type-check gate first; type-failing proposals are re-proposed inside this node.
+    max_iterations: 8
+  - id: harness-execute
+    prompt: Execute the type-gated harness in an isolated container, collecting run traces and coverage/crash signals.
+    depends_on: [propose-typecheck]
+    max_iterations: 5
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: volume, source: agentflow-meta-shared, target: /shared}
+        - {type: tmpfs, target: /scratch}
+  - id: evaluate-diagnose
+    prompt: Evaluate harness execution results and produce a diagnostic quadruple; the diagnosis is written back to this node's output as guiding semantics for the next proposal round, driving the outer loop.
+    depends_on: [harness-execute]

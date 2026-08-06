@@ -211,3 +211,57 @@ def test_factory_applies_node_overrides_and_tool_subset():
 
     with pytest.raises(ValueError, match="unknown tool"):
         factory(NodeSpec(id="y", prompt="p", tools=["nope"]))
+
+
+def test_factory_adds_container_shell_tool_for_node_container():
+    from agentflow.lite import ContainerConfig, Mount, Tool, ToolRegistry
+
+    def noop() -> str:
+        return "ok"
+
+    registry = ToolRegistry([
+        Tool(name="t1", description="", parameters={"type": "object", "properties": {}}, handler=noop),
+    ])
+    factory = make_agent_factory(client=_echo_client(), default_model="m", registry=registry)
+    spec = NodeSpec(
+        id="sandboxed",
+        prompt="p",
+        tools=["t1"],
+        container=ContainerConfig(
+            image="semgrep/semgrep:latest",
+            mounts=[Mount(type="bind", source="/host/kb", target="/kb", read_only=True)],
+        ),
+    )
+
+    agent = factory(spec)
+
+    # Named tools and the container shell tool coexist in the registry.
+    assert agent.registry.get("t1") is not None
+    run_command = agent.registry.get("run_command")
+    assert run_command is not None
+    assert run_command.parameters["required"] == ["command"]
+
+
+def test_factory_container_only_no_named_tools():
+    from agentflow.lite import ContainerConfig, ToolRegistry
+
+    factory = make_agent_factory(
+        client=_echo_client(), default_model="m", registry=ToolRegistry()
+    )
+    agent = factory(
+        NodeSpec(id="c", prompt="p", container=ContainerConfig(image="python:3.12-slim"))
+    )
+
+    assert agent.registry.get("run_command") is not None
+
+
+def test_factory_without_container_has_no_run_command():
+    from agentflow.lite import ToolRegistry
+
+    factory = make_agent_factory(
+        client=_echo_client(), default_model="m", registry=ToolRegistry()
+    )
+
+    agent = factory(NodeSpec(id="plain", prompt="p"))
+
+    assert agent.registry.get("run_command") is None

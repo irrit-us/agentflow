@@ -8,6 +8,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
 from agentflow.lite.agent import AgentResult
+from agentflow.lite.container import ContainerConfig
 
 _PROMPT_REF = re.compile(r"\{\{\s*nodes\.([A-Za-z0-9_\-]+)\.text\s*\}\}")
 
@@ -31,6 +32,7 @@ class NodeSpec(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     max_iterations: int | None = None
     max_total_tokens: int | None = None
+    container: ContainerConfig | None = None
 
 
 class GraphSpec(BaseModel):

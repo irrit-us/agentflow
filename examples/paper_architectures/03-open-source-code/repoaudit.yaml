@@ -1,0 +1,20 @@
+# RepoAudit: demand-driven repository-level audit source-locator → explorer → validator → report (source doc: 03-open-source-code)
+name: repoaudit
+nodes:
+  - id: source-locator
+    prompt: Parse the repository code with tree-sitter and locate the source functions of data flows / dangerous points on demand.
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+  - id: explorer
+    prompt: Starting from the sources, explore function by function along the call graph and data dependency graph on demand, reading and writing the path-fact cache in agent-memory; the exploration iteration is carried by LiteAgent max_iterations.
+    max_iterations: 12
+  - id: validator
+    prompt: Perform dual verification of control-flow alignment and path feasibility on candidate vulnerability paths, removing unreachable false positives.
+  - id: report
+    prompt: Aggregate the validated vulnerability paths and generate the audit report in Chinese.
+edges:
+  - {from: source-locator, to: explorer}
+  - {from: explorer, to: validator}
+  - {from: validator, to: report}

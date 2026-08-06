@@ -1,0 +1,33 @@
+# FirmAgent: fuzzing-first hybrid architecture -- firmware rehosting -> directed fuzzing -> parallel taint/PoC -> PoC emulation validation. Source document: 01-binary
+name: firmagent
+nodes:
+  - id: firmware-rehost
+    prompt: Rehost the target firmware with Greenhouse and QEMU to build a runnable emulation environment for subsequent fuzzing and validation.
+    container:
+      image: agentflow-tools/firmware-qemu:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: firmagent-shared, target: /shared}
+  - id: directed-fuzzing
+    prompt: Run directed greybox fuzzing on the rehosted firmware via a QEMU plugin to locate input sources, sinks, and distance information.
+    container:
+      image: aflplusplus/aflplusplus:latest
+      mounts:
+        - {type: volume, source: firmagent-shared, target: /shared}
+  - id: taint-propagation-agent
+    prompt: Perform LLM taint-propagation reasoning along the paths discovered by fuzzing, using function-level taint caching to analyze reachability from inputs to sinks.
+  - id: poc-generation-agent
+    prompt: Construct a vulnerability-validation PoC based on the fuzzing and taint analysis results.
+  - id: poc-validation
+    prompt: Execute the PoC on the emulated firmware to verify whether the vulnerability is truly triggered; on failure, retry and iterate inside this node, with the inner loop carried by LiteAgent max_iterations.
+    max_iterations: 5
+    container:
+      image: agentflow-tools/firmware-qemu:latest
+      mounts:
+        - {type: volume, source: firmagent-shared, target: /shared}
+edges:
+  - {from: firmware-rehost, to: directed-fuzzing}
+  - {from: directed-fuzzing, to: taint-propagation-agent}
+  - {from: directed-fuzzing, to: poc-generation-agent}
+  - {from: taint-propagation-agent, to: poc-validation}
+  - {from: poc-generation-agent, to: poc-validation}

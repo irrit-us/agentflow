@@ -1,0 +1,15 @@
+# V2E: End-to-end vulnerability-to-exploit pipeline: contract analysis -> exploit generation + profit execution check (same profit oracle as A1, internal loop).
+# Source: 02-smart-contract document.
+name: v2e
+nodes:
+  - id: contract-analysis
+    prompt: Analyze the target contract's code and business logic to identify profitable vulnerability exploitation entry points.
+    max_iterations: 8
+  - id: exploit-profit-loop
+    prompt: Generate an exploit contract and execute it on the fork chain, using profit (balance change) as the oracle for success; on execution failure or no profit, loop back within this node to fix it, with the internal loop carried by LiteAgent max_iterations.
+    max_iterations: 8
+    container:
+      image: ghcr.io/foundry-rs/foundry:latest
+      network: bridge
+edges:
+  - {from: contract-analysis, to: exploit-profit-loop}

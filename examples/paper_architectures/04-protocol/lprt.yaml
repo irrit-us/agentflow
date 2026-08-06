@@ -1,0 +1,25 @@
+# LPRT: traffic/code input → LLM reverses the HTTP protocol → security testing, a three-stage pipeline.
+# Source document: 04-protocol
+name: lprt
+nodes:
+  - id: traffic-code-input
+    prompt: Organize the target system's network traffic and related code as input, annotating the observable request-response patterns.
+    max_iterations: 4
+  - id: llm-reverse
+    prompt: Use an LLM to reverse-engineer the HTTP protocol details from the traffic and code, inferring field semantics, state dependencies, and constraints.
+    max_iterations: 10
+  - id: security-test
+    prompt: Construct and execute security test cases against the target based on the reversed protocol details, validating potential defects through real HTTP requests.
+    max_iterations: 10
+    container:
+      image: python:3.12-slim
+      network: bridge
+      memory: 1g
+      cpus: 1.0
+      timeout: 600
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: lprt-shared, target: /shared}
+edges:
+  - {from: traffic-code-input, to: llm-reverse}
+  - {from: llm-reverse, to: security-test}

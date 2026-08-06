@@ -1,0 +1,27 @@
+# Agent4Vul: Multimodal fusion detection: comment generation / bytecode CFG / source code as three parallel branches -> multimodal vectorized fusion -> GAT+LightGBM classification.
+# Source: 02-smart-contract document.
+name: agent4vul
+nodes:
+  - id: commentator
+    prompt: Read the target contract source code and use an LLM to generate vulnerability-aware comments, flagging suspicious semantics and risk points.
+    max_iterations: 6
+  - id: bytecode-cfg-extractor
+    prompt: Extract the control flow graph (CFG) from the contract bytecode, outputting basic blocks and edge structures for subsequent vectorization.
+    container:
+      image: trailofbits/eth-security-toolbox:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+  - id: source-input
+    prompt: Read and organize the target contract source code as the third modality input.
+    max_iterations: 4
+  - id: multimodal-fusion
+    prompt: Vectorize the three modalities (vulnerability-aware comments, bytecode CFG, and source code) separately and fuse them into a unified representation.
+    max_iterations: 6
+  - id: classifier
+    prompt: Based on the fused representation, use a GAT+LightGBM combined classifier to determine whether the contract is vulnerable and the vulnerability type.
+    max_iterations: 4
+edges:
+  - {from: commentator, to: multimodal-fusion}
+  - {from: bytecode-cfg-extractor, to: multimodal-fusion}
+  - {from: source-input, to: multimodal-fusion}
+  - {from: multimodal-fusion, to: classifier}

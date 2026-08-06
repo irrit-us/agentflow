@@ -1,0 +1,15 @@
+# RAPTOR: single-node agent loop invoking Semgrep/CodeQL/AFL++ → findings (source doc: 03-open-source-code)
+name: raptor
+nodes:
+  - id: claude-code-agent-loop
+    prompt: The agent autonomously invokes tools such as Semgrep/CodeQL/AFL++ in a loop to discover vulnerabilities, using tool execution results and fuzz crashes as the oracle; the execute-feedback loop is folded inside this node and carried by LiteAgent max_iterations.
+    max_iterations: 16
+    container:
+      image: aflplusplus/aflplusplus:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: tmpfs, target: /fuzz-out}
+  - id: findings
+    prompt: Consolidate the verified vulnerabilities produced by the agent loop and output the findings.
+edges:
+  - {from: claude-code-agent-loop, to: findings}

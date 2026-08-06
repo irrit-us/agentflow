@@ -1,0 +1,23 @@
+# ACTOR: Human-in-the-loop audit pipeline: Slither scan -> multi-agent audit -> human confirmation gate -> report generation.
+# Source: 02-smart-contract document.
+name: actor
+nodes:
+  - id: slither-scan
+    prompt: Statically scan the target contract with Slither and output an initial list of alerts for the multi-agent audit to reference.
+    container:
+      image: trailofbits/eth-security-toolbox:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+  - id: multi-agent-audit
+    prompt: Multiple audit agents collaboratively audit the contract against the Slither alerts, cross-validating and aggregating candidate vulnerabilities.
+    max_iterations: 10
+  - id: human-review-gate
+    prompt: Submit the candidate vulnerabilities to a human confirmation gate, where a human approves or rejects them; only confirmed items enter the report.
+    max_iterations: 2
+  - id: report
+    prompt: Generate the final audit report from the human-confirmed vulnerability list.
+    max_iterations: 4
+edges:
+  - {from: slither-scan, to: multi-agent-audit}
+  - {from: multi-agent-audit, to: human-review-gate}
+  - {from: human-review-gate, to: report}

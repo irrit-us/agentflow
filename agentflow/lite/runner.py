@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 
 from agentflow.lite.agent import AgentResult, LiteAgent
 from agentflow.lite.client import LiteLLMClient
+from agentflow.lite.container import DockerExecutor, container_shell_tool
 from agentflow.lite.graph import GraphSpec, NodeSpec, resolve_prompt
 from agentflow.lite.router import ModelRouter
 from agentflow.lite.tools import ToolRegistry
@@ -170,15 +171,17 @@ def make_agent_factory(
         raise ValueError("pass exactly one of `client` or `router`")
 
     def factory(spec: NodeSpec) -> LiteAgent:
-        tools: ToolRegistry | None = None
+        selected = []
         if registry is not None and spec.tools:
-            selected = []
             for name in spec.tools:
                 item = registry.get(name)
                 if item is None:
                     raise ValueError(f"unknown tool '{name}' requested by node '{spec.id}'")
                 selected.append(item)
-            tools = ToolRegistry(selected)
+        if spec.container is not None:
+            # Per-node sandbox: the agent can run shell commands in its own container.
+            selected.append(container_shell_tool(DockerExecutor(spec.container)))
+        tools = ToolRegistry(selected) if selected else None
         kwargs: dict = {
             "system_prompt": spec.system_prompt,
             "tools": tools,

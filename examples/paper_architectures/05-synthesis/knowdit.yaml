@@ -1,0 +1,41 @@
+# KNOWDIT: knowledge-graph-driven audit — build a contest knowledge graph offline; online: index the repository → map knowledge → generate specifications → synthesize and execute PoC → reflect and classify. Source document: 05-synthesis.
+name: knowdit
+nodes:
+  - id: contest-extract
+    prompt: Extract vulnerability knowledge entries (vulnerability patterns, root causes, exploitation conditions) from historical audit contest reports.
+  - id: semantic-classify
+    prompt: Semantically classify the extracted knowledge entries into a unified vulnerability taxonomy.
+    depends_on: [contest-extract]
+  - id: dedup
+    prompt: Semantically deduplicate the classified knowledge entries, merging entries that describe the same vulnerability pattern.
+    depends_on: [semantic-classify]
+  - id: causal-link
+    prompt: Build causal-link edges between knowledge entries, connecting root causes with composably exploitable vulnerability patterns.
+    depends_on: [dedup]
+  - id: knowledge-graph
+    prompt: Materialize the deduplicated, causally linked knowledge entries into a vulnerability knowledge graph for online audit queries.
+    depends_on: [causal-link]
+  - id: repository-index
+    prompt: "Parse the target contract repository and build three kinds of indexes: call graph, state-variable reference graph, and inheritance graph."
+  - id: knowledge-mapper
+    prompt: Map code entities in the repository indexes to relevant vulnerability patterns in the knowledge graph, delineating high-risk regions.
+    depends_on: [repository-index, knowledge-graph]
+  - id: specification-generator
+    prompt: Generate formal security specifications with three states (pre/during/post) plus transaction sequences for the high-risk regions.
+    depends_on: [knowledge-mapper]
+  - id: poc-synthesizer
+    prompt: Compile and synthesize the security specifications into executable Foundry PoC test code.
+    depends_on: [specification-generator]
+  - id: poc-executor
+    prompt: Execute the PoC in a Foundry container, using the specification as an oracle to judge violations and recording execution traces.
+    depends_on: [poc-synthesizer]
+    max_iterations: 5
+    container:
+      image: ghcr.io/foundry-rs/foundry:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: knowdit-shared, target: /shared}
+  - id: finding-reflector
+    prompt: Classify results against the specification and execution traces (real vulnerability / specification error / PoC error); on specification or PoC errors, correction semantics flow back inside this node, with iteration carried by LiteAgent max_iterations.
+    depends_on: [poc-executor, specification-generator]
+    max_iterations: 5

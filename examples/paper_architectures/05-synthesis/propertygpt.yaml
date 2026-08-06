@@ -1,0 +1,33 @@
+# PropertyGPT: retrieval-augmented property generation — retrieve seed properties from a vector store → one-shot ICL generates PSL → compiler-feedback revision → static check → formal proof. Source document: 05-synthesis.
+name: propertygpt
+nodes:
+  - id: property-retrieval
+    prompt: Run top-K retrieval against the Certora property vector store for the target code, fetching the most relevant seed properties.
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: bind, source: ./kb, target: /kb, read_only: true}
+  - id: property-generation
+    prompt: Use the retrieved seed properties as one-shot ICL examples to generate candidate PSL properties for the target code.
+    depends_on: [property-retrieval]
+  - id: compiler-revision-loop
+    prompt: Compile the generated PSL properties and iteratively revise them based on compiler feedback; the compiler-feedback loop is folded inside this node and carried by LiteAgent max_iterations.
+    depends_on: [property-generation]
+    max_iterations: 8
+    container:
+      image: trailofbits/eth-security-toolbox:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: propertygpt-shared, target: /shared}
+  - id: static-check
+    prompt: Statically check the compiled properties, filtering out trivially true or code-irrelevant properties.
+    depends_on: [compiler-revision-loop]
+  - id: formal-prover
+    prompt: Formally prove the remaining properties with symbolic execution and bounded model checking (BMC), outputting proof/refutation and counterexamples.
+    depends_on: [static-check]
+    max_iterations: 5
+    container:
+      image: trailofbits/eth-security-toolbox:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: propertygpt-shared, target: /shared}

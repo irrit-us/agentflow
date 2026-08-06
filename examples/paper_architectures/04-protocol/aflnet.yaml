@@ -1,0 +1,30 @@
+# AFLNET: stateful protocol fuzzing loop (pcap seeds → fuzz/state-machine learning loop → crash report).
+# Source document: 04-protocol
+name: aflnet
+nodes:
+  - id: seed-corpus
+    prompt: Organize and describe the pcap seed corpus used for protocol fuzzing, stating which protocol states and message sequences each seed covers.
+    max_iterations: 4
+  - id: fuzz-learn-loop
+    prompt: >-
+      Perform stateful protocol fuzzing against the target service based on the seed corpus: send mutated
+      messages over sockets, use response codes as state feedback, incrementally learn the protocol
+      state machine, and guide further mutation with coverage information; the entire
+      execute-feedback-learn loop is folded inside this node and carried by the LiteAgent
+      max_iterations mechanism, and any crashes found are written to the shared volume.
+    max_iterations: 16
+    container:
+      image: aflplusplus/aflplusplus:latest
+      network: bridge
+      memory: 2g
+      cpus: 2.0
+      timeout: 600
+      mounts:
+        - {type: bind, source: ./seeds, target: /seeds, read_only: true}
+        - {type: volume, source: aflnet-shared, target: /shared}
+  - id: crash-report
+    prompt: Summarize the crashes found by the fuzzing loop and the learned state machine, and output a Chinese-language report grouped by state and crash type.
+    max_iterations: 4
+edges:
+  - {from: seed-corpus, to: fuzz-learn-loop}
+  - {from: fuzz-learn-loop, to: crash-report}

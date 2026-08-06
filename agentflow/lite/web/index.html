@@ -1,9 +1,9 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Lite Pipeline 监控</title>
+<title>Lite Pipeline Monitor</title>
 <style>
   :root {
     --bg: #0f1420; --panel: #171e2e; --border: #2a3550; --text: #dbe2f0; --muted: #8a94ad;
@@ -59,8 +59,8 @@
 </head>
 <body>
 <header>
-  <h1 id="title">Lite Pipeline 监控</h1>
-  <span id="health"><span id="health-dot" class="dot unknown"></span><span id="health-text">检查中…</span></span>
+  <h1 id="title">Lite Pipeline Monitor</h1>
+  <span id="health"><span id="health-dot" class="dot unknown"></span><span id="health-text">Checking…</span></span>
   <span id="done-flag"></span>
 </header>
 <div id="main">
@@ -69,20 +69,20 @@
     <div id="nodes"></div>
   </div>
   <aside>
-    <h3>阻塞任务</h3>
-    <ul id="blocked"><li class="waiting">暂无</li></ul>
+    <h3>Blocked tasks</h3>
+    <ul id="blocked"><li class="waiting">None</li></ul>
   </aside>
 </div>
 <div id="drawer">
   <header>
-    <h1 id="drawer-title">节点详情</h1>
-    <button id="drawer-close">关闭</button>
+    <h1 id="drawer-title">Node details</h1>
+    <button id="drawer-close">Close</button>
   </header>
   <div id="drawer-body"></div>
   <div id="drawer-footer"></div>
 </div>
 <script>
-const STATUS_TEXT = { preparing: "等待中", processing: "运行中", finished: "已完成", errored: "失败" };
+const STATUS_TEXT = { preparing: "preparing", processing: "processing", finished: "finished", errored: "errored" };
 const NODE_W = 200, NODE_H = 78;
 let graphName = "pipeline";
 let positions = {};
@@ -193,10 +193,10 @@ async function pollState() {
     data.nodes.forEach(n => { nodesById[n.id] = n; });
     edges = data.edges;
     ensureLayout(data.nodes.map(n => n.id));
-    document.getElementById("title").textContent = "Lite Pipeline 监控 · " + data.name;
-    document.getElementById("done-flag").textContent = data.done ? "✔ 全部完成" : "";
+    document.getElementById("title").textContent = "Lite Pipeline Monitor · " + data.name;
+    document.getElementById("done-flag").textContent = data.done ? "✔ All done" : "";
     renderNodes();
-  } catch (e) { /* 服务暂不可达，下一轮重试 */ }
+  } catch (e) { /* server unreachable; retry on the next tick */ }
 }
 
 async function pollHealth() {
@@ -208,20 +208,20 @@ async function pollHealth() {
     const llm = data.llm || { status: "unknown" };
     if (llm.status === "ok") {
       dot.className = "dot ok";
-      text.textContent = "API 正常 · " + llm.latency_ms + "ms";
+      text.textContent = "API ok · " + llm.latency_ms + "ms";
       text.title = "";
     } else if (llm.status === "error") {
       dot.className = "dot err";
-      text.textContent = "API 异常";
+      text.textContent = "API error";
       text.title = llm.error || "";
     } else {
       dot.className = "dot unknown";
-      text.textContent = "API 状态未知";
+      text.textContent = "API status unknown";
       text.title = "";
     }
   } catch (e) {
     dot.className = "dot err";
-    text.textContent = "监控服务不可达";
+    text.textContent = "Monitor unreachable";
     text.title = String(e);
   }
 }
@@ -232,42 +232,42 @@ async function pollBlocked() {
     const res = await fetch("/api/blocked");
     const data = await res.json();
     if (!data.blocked.length) {
-      list.innerHTML = '<li class="waiting">暂无</li>';
+      list.innerHTML = '<li class="waiting">None</li>';
       return;
     }
     list.innerHTML = data.blocked.map(b =>
-      "<li><b>" + esc(b.node_id) + '</b><br><span class="waiting">等待: ' +
+      "<li><b>" + esc(b.node_id) + '</b><br><span class="waiting">Waiting on: ' +
       esc(b.waiting_on.join(", ")) + "</span></li>"
     ).join("");
-  } catch (e) { /* 下一轮重试 */ }
+  } catch (e) { /* retry on the next tick */ }
 }
 
 async function openDrawer(id) {
   const drawer = document.getElementById("drawer");
   const body = document.getElementById("drawer-body");
   const footer = document.getElementById("drawer-footer");
-  document.getElementById("drawer-title").textContent = "节点: " + id;
-  body.innerHTML = "加载中…";
+  document.getElementById("drawer-title").textContent = "Node: " + id;
+  body.innerHTML = "Loading…";
   footer.innerHTML = "";
   drawer.classList.add("open");
   try {
     const res = await fetch("/api/nodes/" + encodeURIComponent(id) + "/inspect");
-    if (!res.ok) { body.innerHTML = "加载失败: HTTP " + res.status; return; }
+    if (!res.ok) { body.innerHTML = "Load failed: HTTP " + res.status; return; }
     const data = await res.json();
     if (!data.messages.length) {
-      body.innerHTML = '<div class="msg"><pre>暂无消息（节点尚未产出结果）</pre></div>';
+      body.innerHTML = '<div class="msg"><pre>No messages yet (the node has produced no result).</pre></div>';
     } else {
       body.innerHTML = data.messages.map(renderMessage).join("");
     }
     let foot = "";
     if (data.usage) foot += "tokens: " + data.usage.total_tokens +
       " (prompt " + data.usage.prompt_tokens + " + completion " + data.usage.completion_tokens + ") · ";
-    if (data.iterations != null) foot += "迭代: " + data.iterations + " · ";
-    foot += "状态: " + (STATUS_TEXT[data.status] || data.status);
-    if (data.error) foot += '<br><span class="error">错误: ' + esc(data.error) + "</span>";
+    if (data.iterations != null) foot += "iterations: " + data.iterations + " · ";
+    foot += "status: " + (STATUS_TEXT[data.status] || data.status);
+    if (data.error) foot += '<br><span class="error">Error: ' + esc(data.error) + "</span>";
     footer.innerHTML = foot;
   } catch (e) {
-    body.innerHTML = "加载失败: " + esc(e);
+    body.innerHTML = "Load failed: " + esc(e);
   }
 }
 
@@ -276,12 +276,12 @@ function renderMessage(m) {
   if (m.content) inner += "<pre>" + esc(m.content) + "</pre>";
   if (m.tool_calls) {
     m.tool_calls.forEach(call => {
-      inner += "<details><summary>调用工具: " + esc(call.name) + "</summary><pre>" +
+      inner += "<details><summary>Tool call: " + esc(call.name) + "</summary><pre>" +
         esc(JSON.stringify(call.arguments, null, 2)) + "</pre></details>";
     });
   }
   if (m.role === "tool" && m.content) {
-    inner = '<div class="role">tool</div><details><summary>工具返回 (' + esc(m.tool_call_id || "") + ")</summary><pre>" +
+    inner = '<div class="role">tool</div><details><summary>Tool result (' + esc(m.tool_call_id || "") + ")</summary><pre>" +
       esc(m.content) + "</pre></details>";
   }
   return '<div class="msg role-' + esc(m.role) + '">' + inner + "</div>";

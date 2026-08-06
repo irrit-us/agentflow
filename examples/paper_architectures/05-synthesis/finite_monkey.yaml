@@ -1,0 +1,22 @@
+# Finite Monkey: multi-model funnel detection — ANTLR function-level parsing → context funnel (QA+RAG) → assertion-style prompting generates hypothesis cloud → Claude detection → DeepSeek-o1 verification and convergence. Source documents: 05-synthesis + 06-practice.
+name: finite-monkey
+nodes:
+  - id: antlr-parse
+    prompt: Parse the multi-language codebase at function level with ANTLRv4 grammars, splitting out function units to be checked.
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: finite-monkey-shared, target: /shared}
+  - id: context-funnel
+    prompt: Funnel in the necessary context for each function unit via codebase-QA and project-level RAG.
+    depends_on: [antlr-parse]
+  - id: hypothesis-cloud
+    prompt: Generate a vulnerability hypothesis cloud in parallel with assertion-style prompting, covering multiple suspicious patterns.
+    depends_on: [context-funnel]
+  - id: detect-model
+    prompt: Check the hypothesis cloud item by item with Claude, filtering out plausibly valid vulnerability candidates.
+    depends_on: [hypothesis-cloud]
+  - id: verify-model
+    prompt: Independently verify and converge the candidates with DeepSeek-o1, removing false positives and outputting final findings.
+    depends_on: [detect-model]

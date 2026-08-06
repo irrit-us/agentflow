@@ -1,0 +1,22 @@
+# QASecClaw: Semgrep high-recall scan → (cache-backed) multi-agent batched LLM review → fail-open gate → output (source doc: 03-open-source-code)
+name: qasecclaw
+nodes:
+  - id: sast-scan
+    prompt: Run a high-recall SAST scan of the target repository with Semgrep, producing candidate alerts.
+    container:
+      image: semgrep/semgrep:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+  - id: verdict-cache
+    prompt: Query the historical verdict cache for unchanged files, providing pre-filtering and reuse for the review.
+  - id: llm-review
+    prompt: Multiple agents review candidate alerts in batches of 15 files per round, outputting JSON-formatted verdicts.
+  - id: fail-open-gate
+    prompt: Fail open when the LLM call fails or returns malformed JSON, keeping the original alerts without discarding them.
+  - id: output
+    prompt: Aggregate the adjudicated alert list and output the final result.
+edges:
+  - {from: sast-scan, to: llm-review}
+  - {from: verdict-cache, to: llm-review}
+  - {from: llm-review, to: fail-open-gate}
+  - {from: fail-open-gate, to: output}

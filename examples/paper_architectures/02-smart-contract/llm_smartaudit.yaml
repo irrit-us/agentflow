@@ -1,0 +1,20 @@
+# LLM-SmartAudit: Virtual-chat multi-role audit: coarse-grained localization -> targeted analysis -> multi-role dialogue with peer review -> three-round consensus voting.
+# Source: 02-smart-contract document.
+name: llm_smartaudit
+nodes:
+  - id: broad-analysis
+    prompt: Perform coarse-grained analysis of the target smart contract in a ReAct manner, locating functions and code regions that may contain vulnerabilities.
+    max_iterations: 8
+  - id: targeted-analysis
+    prompt: Based on the coarse-grained localization results, perform targeted in-depth analysis of suspicious regions using Buffer-of-Thoughts templates, giving candidate vulnerabilities with rationale.
+    max_iterations: 8
+  - id: role-chat
+    prompt: Four virtual roles (PM, Advisor, Auditor, Programmer) hold multi-round dialogues about the candidate vulnerabilities and refine conclusions through role-swap peer review.
+    max_iterations: 10
+  - id: consensus-vote
+    prompt: Run three rounds of consensus voting on the role-dialogue conclusions to output the final vulnerability verdict; if disagreement arises, loop back within this node to re-run the role-chat discussion, carried by LiteAgent max_iterations.
+    max_iterations: 6
+edges:
+  - {from: broad-analysis, to: targeted-analysis}
+  - {from: targeted-analysis, to: role-chat}
+  - {from: role-chat, to: consensus-vote}

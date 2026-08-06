@@ -1,0 +1,30 @@
+# Protocol state machine inference: protocol input → (LLM inference ∥ FlexFringe trace learning) → differential fuzzing against the real implementation.
+# Source document: 04-protocol
+name: protocol-state-machine
+nodes:
+  - id: protocol-input
+    prompt: Organize the target protocol's implementation code and network traffic as input, describing its message formats and observable interaction behavior.
+    max_iterations: 4
+  - id: llm-inference
+    prompt: Infer the protocol state machine from the implementation code and traffic by combining RAG retrieval with CoT reasoning, producing a candidate set of states and transitions.
+    max_iterations: 10
+  - id: flexfringe-learn
+    prompt: In parallel with llm-inference, use FlexFringe to learn the protocol state machine from fuzzer-generated traces, outputting the learned state-transition model.
+    max_iterations: 10
+  - id: differential-fuzz
+    prompt: Using both state machines as references, run differential fuzzing against the real protocol implementation, comparing actual behavior with the inferred models and recording deviations.
+    max_iterations: 12
+    container:
+      image: aflplusplus/aflplusplus:latest
+      network: bridge
+      memory: 2g
+      cpus: 2.0
+      timeout: 900
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: protocol-state-machine-shared, target: /shared}
+edges:
+  - {from: protocol-input, to: llm-inference}
+  - {from: protocol-input, to: flexfringe-learn}
+  - {from: llm-inference, to: differential-fuzz}
+  - {from: flexfringe-learn, to: differential-fuzz}

@@ -1,0 +1,18 @@
+# VEXAIoT: three-stage pipeline of detection agent -> attack execution agent -> exploit validation on the range. Source document: 01-binary
+name: vexaiot
+nodes:
+  - id: detection-agent
+    prompt: Analyze the target IoT device/firmware information to detect possible vulnerability types and attack surfaces.
+  - id: attack-execution-agent
+    prompt: Execute the corresponding attacks on the range based on the detection results to verify exploitability.
+    container:
+      image: python:3.12-slim
+      network: bridge
+  - id: exploit-validation
+    prompt: Validate the attack results on the IoTGoat/Metasploitable range to confirm whether the exploitation succeeded.
+    container:
+      image: python:3.12-slim
+      network: bridge
+edges:
+  - {from: detection-agent, to: attack-execution-agent}
+  - {from: attack-execution-agent, to: exploit-validation}

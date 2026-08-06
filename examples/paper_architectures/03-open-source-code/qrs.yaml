@@ -1,0 +1,15 @@
+# QRS: rule-synthesis / neural / symbolic agents in parallel → triangular collaborative fusion for vulnerability discovery (source doc: 03-open-source-code)
+name: qrs
+nodes:
+  - id: rule-synthesis-agent
+    prompt: The rule-synthesis side of the neuro-symbolic triad, responsible for synthesizing and refining detection rules from samples.
+  - id: neural-agent
+    prompt: The neural side of the neuro-symbolic triad, using an LLM for semantic-level vulnerability reasoning over code.
+  - id: symbolic-agent
+    prompt: The symbolic side of the neuro-symbolic triad, performing symbolic execution and checking of the rules and reasoning results.
+  - id: vuln-discovery
+    prompt: Fuse the results of rule synthesis, neural reasoning, and symbolic checking to produce vulnerability conclusions through triangular collaboration.
+edges:
+  - {from: rule-synthesis-agent, to: vuln-discovery}
+  - {from: neural-agent, to: vuln-discovery}
+  - {from: symbolic-agent, to: vuln-discovery}

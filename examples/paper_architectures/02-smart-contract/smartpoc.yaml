@@ -1,0 +1,15 @@
+# SmartPoC: Vulnerability-report-driven PoC generation and execution loop: report parsing -> PoC generation + execution verification (in-node loopback on failure).
+# Source: 02-smart-contract document.
+name: smartpoc
+nodes:
+  - id: bug-report
+    prompt: Parse the input vulnerability report, extracting the vulnerability type, trigger conditions, and target contract context.
+    max_iterations: 4
+  - id: poc-verify-loop
+    prompt: Generate a PoC that reproduces the vulnerability based on the report and verify it by executing in a fork environment; on execution failure or failure to trigger the vulnerability, loop back within this node to fix it, with the internal loop carried by LiteAgent max_iterations.
+    max_iterations: 8
+    container:
+      image: ghcr.io/foundry-rs/foundry:latest
+      network: bridge
+edges:
+  - {from: bug-report, to: poc-verify-loop}

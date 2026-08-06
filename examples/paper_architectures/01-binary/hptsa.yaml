@@ -1,0 +1,19 @@
+# HPTSA: three-tier multi-agent web attack -- global planning -> team dispatch -> HTML trimming -> parallel expert agent execution. Source document: 01-binary
+name: hptsa
+nodes:
+  - id: hierarchical-planner
+    prompt: Plan the attack task globally and replan based on progress.
+  - id: team-manager
+    prompt: Dispatch the plan to expert agents and reassign tasks based on failure traces.
+  - id: html-simplification
+    prompt: Trim noise such as svg/style from pages to provide expert agents with a simplified HTML view.
+  - id: expert-agents
+    prompt: Expert agents executing specialized attacks such as SQLi and CSRF in parallel, using Playwright/ZAP/sqlmap against the target web application; failure traces are fed back to the team-manager for reassignment, and this feedback flow is carried by intra-node iteration.
+    max_iterations: 5
+    container:
+      image: mcr.microsoft.com/playwright/python:latest
+      network: bridge
+edges:
+  - {from: hierarchical-planner, to: team-manager}
+  - {from: team-manager, to: html-simplification}
+  - {from: html-simplification, to: expert-agents}

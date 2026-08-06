@@ -1,0 +1,27 @@
+# CVE-Genie: CVE description -> planner agents -> environment setup -> PoC reproduction -> reproduction check. Source document: 01-binary
+name: cve_genie
+nodes:
+  - id: cve-description
+    prompt: Parse the CVE description to extract affected components, versions, and vulnerability trigger conditions.
+  - id: planner-agents
+    prompt: Plan the reproduction steps based on the CVE information, breaking them down into environment setup and PoC construction tasks.
+  - id: environment-setup
+    prompt: Set up the vulnerable target software environment in a sandbox.
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: volume, source: cve-genie-shared, target: /shared}
+  - id: poc-reproduction
+    prompt: Construct and execute a PoC in the prepared environment to reproduce the vulnerability; on failure, retry and iterate inside this node, with the inner loop carried by LiteAgent max_iterations.
+    max_iterations: 5
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: volume, source: cve-genie-shared, target: /shared}
+  - id: repro-check
+    prompt: Verify that the PoC reproduction result matches the vulnerability behavior described in the CVE, and give a reproduction success/failure conclusion.
+edges:
+  - {from: cve-description, to: planner-agents}
+  - {from: planner-agents, to: environment-setup}
+  - {from: environment-setup, to: poc-reproduction}
+  - {from: poc-reproduction, to: repro-check}

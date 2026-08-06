@@ -1,0 +1,27 @@
+# SmartAuditFlow: Dynamic Plan-Execute audit: static structure analysis -> adaptive audit plan generation -> parallel subtask execution -> RAG vulnerability-knowledge-base calibration.
+# Source: 02-smart-contract document.
+name: smartauditflow
+nodes:
+  - id: static-structure-analysis
+    prompt: Statically analyze the target contract's structure with Slither, extracting contract structure, call relationships, and initial alerts.
+    container:
+      image: trailofbits/eth-security-toolbox:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+  - id: audit-plan-generation
+    prompt: Adaptively generate an audit plan from the static structure analysis results, decomposing the overall audit into executable subtasks.
+    max_iterations: 6
+  - id: subtask-execution
+    prompt: Execute the subtasks in parallel according to the audit plan, combining Broad coarse scanning with Targeted analysis, and aggregate the findings of each subtask.
+    max_iterations: 10
+  - id: rag-calibration
+    prompt: Use RAG to retrieve the vulnerability knowledge base, calibrate each candidate vulnerability found by the subtasks, filter false positives, and output the final conclusions.
+    max_iterations: 6
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: bind, source: ./kb, target: /kb, read_only: true}
+edges:
+  - {from: static-structure-analysis, to: audit-plan-generation}
+  - {from: audit-plan-generation, to: subtask-execution}
+  - {from: subtask-execution, to: rag-calibration}

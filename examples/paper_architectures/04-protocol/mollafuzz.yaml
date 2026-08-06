@@ -1,0 +1,25 @@
+# MoLLaFuzz: LLM-generated seeds → protocol fuzzing execution → crash triage, a three-stage pipeline.
+# Source document: 04-protocol
+name: mollafuzz
+nodes:
+  - id: llm-seed-generation
+    prompt: Use an LLM to generate high-quality initial seed message sequences from the protocol specification, covering as many protocol states and field combinations as possible.
+    max_iterations: 6
+  - id: protocol-fuzzing
+    prompt: Fuzz the target protocol implementation with the LLM-generated seeds, mutating messages and monitoring coverage and crashes, with results written to the shared volume.
+    max_iterations: 12
+    container:
+      image: aflplusplus/aflplusplus:latest
+      network: bridge
+      memory: 2g
+      cpus: 2.0
+      timeout: 900
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: mollafuzz-shared, target: /shared}
+  - id: crash-triage
+    prompt: Deduplicate and prioritize the crashes produced by fuzzing, and output a Chinese-language triage result sorted by severity.
+    max_iterations: 4
+edges:
+  - {from: llm-seed-generation, to: protocol-fuzzing}
+  - {from: protocol-fuzzing, to: crash-triage}

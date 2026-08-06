@@ -1,17 +1,18 @@
-"""Lite 流水线演示：YAML 描述 DAG + 后台执行 + 内置 monitor UI。
+"""Lite pipeline demo: YAML-described DAG + background execution + built-in monitor UI.
 
-用法：
+Usage:
     export OPENAI_API_KEY=sk-...
     python examples/lite_pipeline_demo.py
 
-然后访问 http://127.0.0.1:8600/ 查看实时监控界面（节点状态、阻塞列表、
-点击节点查看完整对话）。可拖动节点位置，布局存在浏览器 localStorage。
+Then open http://127.0.0.1:8600/ for the live monitor (node status, blocked
+list, click a node to inspect its full conversation). Nodes can be dragged;
+the layout persists in the browser's localStorage.
 
-环境变量：
-    OPENAI_API_KEY    API 密钥（必填，除非用本地端点）
-    OPENAI_BASE_URL   覆盖默认 https://api.openai.com/v1（可指向本地 vLLM/Ollama）
-    LITE_MODEL        模型名，默认 gpt-4o-mini
-    LITE_GRAPH        图定义文件路径，默认 examples/lite_pipeline.yaml
+Environment variables:
+    OPENAI_API_KEY    API key (required unless using a local endpoint)
+    OPENAI_BASE_URL   Overrides the default https://api.openai.com/v1 (can point at local vLLM/Ollama)
+    LITE_MODEL        Model name, default gpt-4o-mini
+    LITE_GRAPH        Path to the graph definition, default examples/lite_pipeline.yaml
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ def main() -> None:
         default_model=os.environ.get("LITE_MODEL", "gpt-4o-mini"),
     )
     runner = GraphRunner(graph, factory)
-    runner.run_in_background()  # 流水线在 daemon 线程中执行，HTTP 服务正常响应
+    runner.run_in_background()  # the pipeline runs in a daemon thread; the HTTP server stays responsive
 
     app = create_app(runner, health_probe=make_llm_health_probe(client))
     print("monitor UI: http://127.0.0.1:8600/")

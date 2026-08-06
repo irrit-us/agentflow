@@ -1,0 +1,16 @@
+# VulnAgent: repo indexing/call-graph construction → LangGraph audit loop (folded into a single node) → vulnerability report.
+# Source document: 04-protocol
+name: vulnagent
+nodes:
+  - id: repo-index
+    prompt: Index the target protocol implementation repository and build a call graph, providing the code retrieval and navigation foundation for the subsequent audit.
+    max_iterations: 6
+  - id: langgraph-audit-loop
+    prompt: Perform a multi-step vulnerability audit of the repository based on the index and call graph; the analyze-verify feedback loop is folded inside this node and carried by the LiteAgent max_iterations mechanism, confirming candidate vulnerabilities one by one.
+    max_iterations: 16
+  - id: vuln-report
+    prompt: Summarize the vulnerabilities confirmed by the audit loop, and output a Chinese-language vulnerability report including location, root cause, and exploitation conditions.
+    max_iterations: 4
+edges:
+  - {from: repo-index, to: langgraph-audit-loop}
+  - {from: langgraph-audit-loop, to: vuln-report}

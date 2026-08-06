@@ -1,0 +1,21 @@
+# MCP Safety Audit: a supervisor schedules hacker and auditor agents to audit an MCP Server in parallel, then aggregates a scan report.
+# Source document: 04-protocol
+name: mcp-safety-audit
+nodes:
+  - id: supervisor
+    prompt: Act as the supervisor to analyze the target MCP Server's capabilities and attack surface, and assign audit tasks to the downstream hacker and auditor agents.
+    max_iterations: 6
+  - id: hacker-agent
+    prompt: Following the supervisor's tasks, construct and reason through exploit chains against the MCP Server, outputting candidate attack paths and their required preconditions.
+    max_iterations: 10
+  - id: auditor-agent
+    prompt: In parallel with hacker-agent, verify and expand the attack surface and known risks via Web/arXiv/HN retrieval (RAG), outputting supporting evidence.
+    max_iterations: 10
+  - id: scanner-report
+    prompt: Aggregate hacker-agent's exploit paths and auditor-agent's retrieval evidence, and generate a Chinese-language security scan report.
+    max_iterations: 4
+edges:
+  - {from: supervisor, to: hacker-agent}
+  - {from: supervisor, to: auditor-agent}
+  - {from: hacker-agent, to: scanner-report}
+  - {from: auditor-agent, to: scanner-report}

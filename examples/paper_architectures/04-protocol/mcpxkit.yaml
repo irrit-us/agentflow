@@ -1,0 +1,25 @@
+# MCPXKIT: MCP attack-surface modeling → attack-taxonomy experiment execution → Attack Efficacy quantitative scoring, a three-stage pipeline.
+# Source document: 04-protocol
+name: mcpxkit
+nodes:
+  - id: mcp-model
+    prompt: Model the attack surface of MCP's Host-Client-Server architecture, mapping the trust boundaries and exploitable entry points of each component.
+    max_iterations: 6
+  - id: attack-execution
+    prompt: Based on the attack-surface model, execute attack experiments against the target MCP environment across 31 attack categories, recording the process and outcome of each category.
+    max_iterations: 12
+    container:
+      image: python:3.12-slim
+      network: bridge
+      memory: 1g
+      cpus: 1.0
+      timeout: 600
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: mcpxkit-shared, target: /shared}
+  - id: efficacy-scoring
+    prompt: Quantitatively score each attack category by the Attack Efficacy metric based on the experiment results, and output a scoring table with conclusions.
+    max_iterations: 4
+edges:
+  - {from: mcp-model, to: attack-execution}
+  - {from: attack-execution, to: efficacy-scoring}

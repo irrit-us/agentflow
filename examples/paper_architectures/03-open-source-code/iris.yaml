@@ -1,0 +1,19 @@
+# IRIS: LLM extracts CWE taint specs → CodeQL taint analysis → LLM context filtering to reduce false positives → conclusions (source doc: 03-open-source-code)
+name: iris
+nodes:
+  - id: taint-spec-extraction
+    prompt: Use an LLM to extract CWE-specific source/sink taint specifications from third-party library API documentation and code.
+  - id: codeql-analysis
+    prompt: Run whole-repository taint analysis in CodeQL with the extracted taint specs, producing candidate alerts.
+    container:
+      image: agentflow-tools/codeql:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+  - id: llm-context-filter
+    prompt: Use an LLM to review each CodeQL candidate together with its alert context, filtering out false positives.
+  - id: findings
+    prompt: Consolidate the confirmed real vulnerabilities after review and output the findings.
+edges:
+  - {from: taint-spec-extraction, to: codeql-analysis}
+  - {from: codeql-analysis, to: llm-context-filter}
+  - {from: llm-context-filter, to: findings}

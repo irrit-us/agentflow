@@ -1,0 +1,28 @@
+# Smartify: Five-role repair pipeline: language-RAG-supported audit -> architecture design -> code generation -> repair-validate loop (compile/test oracle).
+# Source: 02-smart-contract document.
+name: smartify
+nodes:
+  - id: language-rag
+    prompt: Retrieve the Solidity/Move few-shot example library to provide language-specific knowledge and example support for the auditor role.
+    max_iterations: 4
+  - id: auditor
+    prompt: As the auditor role, review the target contract, identify vulnerabilities with few-shot support, and describe the repair requirements.
+    max_iterations: 8
+  - id: architect
+    prompt: As the architect role, design the repair plan and code change structure based on the repair requirements.
+    max_iterations: 6
+  - id: code-generator
+    prompt: As the code generation role, produce the modified contract code according to the repair plan.
+    max_iterations: 6
+  - id: refiner-validator-loop
+    prompt: The refiner and validator work in a loop, compiling and running tests as the oracle; on compilation or test failure, loop back within this node to repair, with the internal loop carried by LiteAgent max_iterations.
+    max_iterations: 8
+    container:
+      image: trailofbits/eth-security-toolbox:latest
+      mounts:
+        - {type: volume, source: smartify-shared, target: /shared}
+edges:
+  - {from: language-rag, to: auditor}
+  - {from: auditor, to: architect}
+  - {from: architect, to: code-generator}
+  - {from: code-generator, to: refiner-validator-loop}

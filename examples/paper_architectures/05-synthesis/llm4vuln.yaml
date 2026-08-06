@@ -1,0 +1,20 @@
+# LLM4Vuln: decoupled evaluation framework — three pluggable components (knowledge retrieval / context supplement / prompt scheme) mounted in parallel on a base LLM → structured output → F1 evaluation on controlled scenarios. Source document: 05-synthesis.
+name: llm4vuln
+nodes:
+  - id: base-llm
+    prompt: Run raw vulnerability detection reasoning on the target code with a base LLM, serving as the common input baseline for all enhancement components.
+  - id: knowledge-retrieval
+    prompt: "Pluggable component: retrieve external vulnerability knowledge and inject it into the base LLM's detection reasoning."
+    depends_on: [base-llm]
+  - id: context-supplement
+    prompt: "Pluggable component: supplement the base LLM with missing code context (callee functions, global state, etc.)."
+    depends_on: [base-llm]
+  - id: prompt-scheme
+    prompt: "Pluggable component: drive base-LLM detection by switching between different prompting schemes (e.g., CoT, few-shot)."
+    depends_on: [base-llm]
+  - id: instruction-output
+    prompt: Aggregate detection conclusions from all component paths and output structured detection results in a unified instruction format.
+    depends_on: [knowledge-retrieval, context-supplement, prompt-scheme]
+  - id: evaluation
+    prompt: Compare the F1 of each component combination across 3528 controlled scenarios to evaluate each decoupled component's contribution.
+    depends_on: [instruction-output]

@@ -1,0 +1,12 @@
+# FirmHive: a root agent dynamically grows a child-agent tree to analyze firmware, then aggregates conclusions layer by layer. Source document: 01-binary
+name: firmhive
+nodes:
+  - id: root-agent
+    prompt: The root agent receives the firmware analysis task, performs top-level decomposition, and decides which child agents to spawn.
+  - id: child-agents
+    prompt: A child-agent tree grown at runtime, performing layered in-depth analysis of the subtasks decomposed by the root agent; the number and depth of child agents grow dynamically at runtime and are collapsed into this single node on the static graph.
+  - id: aggregation
+    prompt: Aggregate the analysis conclusions of the child agents layer by layer to form the final vulnerability report.
+edges:
+  - {from: root-agent, to: child-agents}
+  - {from: child-agents, to: aggregation}

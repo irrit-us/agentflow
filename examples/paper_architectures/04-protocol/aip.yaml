@@ -1,0 +1,20 @@
+# AIP: identity issuance → Invocation-Bound capability token chain (attenuated delegation) → Datalog policy verification → completion block.
+# Source document: 04-protocol
+name: aip
+nodes:
+  - id: identity-issuance
+    prompt: Issue identity credentials for the agents participating in the interaction, establishing the trust root for the subsequent delegation chain.
+    max_iterations: 4
+  - id: capability-token-chain
+    prompt: Build an Invocation-Bound capability token chain on top of the issued identities, so that the authorization scope is attenuated at each level of invocation delegation.
+    max_iterations: 6
+  - id: verifier
+    prompt: Verify the capability token chain with Datalog policies, confirming that every invocation stays within the attenuated authorization scope.
+    max_iterations: 6
+  - id: completion-block
+    prompt: After verification passes, generate a completion block recording the delegation chain and verification conclusion of this interaction as the closing credential.
+    max_iterations: 4
+edges:
+  - {from: identity-issuance, to: capability-token-chain}
+  - {from: capability-token-chain, to: verifier}
+  - {from: verifier, to: completion-block}

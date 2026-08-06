@@ -137,3 +137,70 @@ def test_load_graph_validates_automatically(tmp_path):
 
     with pytest.raises(ValueError, match="unknown nodes: nope"):
         load_graph(path)
+
+
+def test_load_graph_with_node_container_config(tmp_path):
+    path = tmp_path / "container.yaml"
+    path.write_text(
+        """
+nodes:
+  - id: scan
+    prompt: scan it
+    container:
+      image: semgrep/semgrep:latest
+      network: none
+      memory: 1g
+      mounts:
+        - type: bind
+          source: /host/kb
+          target: /kb
+          read_only: true
+""",
+        encoding="utf-8",
+    )
+
+    graph = load_graph(path)
+    container = graph.nodes[0].container
+
+    assert container is not None
+    assert container.image == "semgrep/semgrep:latest"
+    assert container.network == "none"
+    assert container.memory == "1g"
+    assert len(container.mounts) == 1
+    mount = container.mounts[0]
+    assert mount.type == "bind"
+    assert mount.source == "/host/kb"
+    assert mount.target == "/kb"
+    assert mount.read_only is True
+    assert graph.nodes[0].model is None  # container block does not affect other fields
+
+
+def test_load_graph_tmpfs_mount_warns(tmp_path):
+    path = tmp_path / "tmpfs.yaml"
+    path.write_text(
+        """
+nodes:
+  - id: a
+    prompt: x
+    container:
+      image: python:3.12-slim
+      mounts:
+        - type: tmpfs
+          target: /scratch
+          tmpfs_size: 64m
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.warns(UserWarning, match="tmpfs"):
+        graph = load_graph(path)
+
+    mount = graph.nodes[0].container.mounts[0]
+    assert mount.type == "tmpfs"
+    assert mount.tmpfs_size == "64m"
+
+
+def test_node_without_container_defaults_to_none():
+    node = NodeSpec(id="a", prompt="x")
+
+    assert node.container is None

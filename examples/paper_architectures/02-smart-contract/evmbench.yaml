@@ -1,0 +1,27 @@
+# EVMbench: Real-world high-severity vulnerability benchmark: task construction (with canary) -> agent solving (detect/patch/exploit) -> Anvil local chain -> isolated-container transaction replay scoring.
+# Source: 02-smart-contract document.
+name: evmbench
+nodes:
+  - id: task-setup
+    prompt: Construct evaluation tasks and initial chain state from real high-severity vulnerabilities, and embed a canary to detect data leakage.
+    max_iterations: 6
+  - id: agent-solve
+    prompt: Execute one of the three modes (detect, patch, or exploit) on the constructed task, producing a transaction sequence or a patch.
+    max_iterations: 10
+  - id: anvil-node
+    prompt: Start an Anvil local chain, load the task's initial state, execute the agent-produced transactions, and record the execution trace to the shared volume.
+    container:
+      image: ghcr.io/foundry-rs/foundry:latest
+      network: bridge
+      mounts:
+        - {type: volume, source: evmbench-shared, target: /shared}
+  - id: rust-reexecution-grader
+    prompt: Replay the transactions from the execution trace in an isolated container, compare on-chain state changes, and score according to the task mode.
+    container:
+      image: ghcr.io/foundry-rs/foundry:latest
+      mounts:
+        - {type: volume, source: evmbench-shared, target: /shared}
+edges:
+  - {from: task-setup, to: agent-solve}
+  - {from: agent-solve, to: anvil-node}
+  - {from: anvil-node, to: rust-reexecution-grader}

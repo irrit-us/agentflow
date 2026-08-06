@@ -1,0 +1,16 @@
+# DeepAudit: multi-agent audit → sandboxed PoC auto-validation → report generation (source doc: 03-open-source-code)
+name: deepaudit
+nodes:
+  - id: multi-agent-audit
+    prompt: Multiple LLM agents divide the work to deeply audit the target code and produce candidate vulnerabilities.
+  - id: sandbox-poc-validation
+    prompt: Generate and execute PoC exploits for candidate vulnerabilities in an automated sandbox, using whether the PoC triggers as the oracle.
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: tmpfs, target: /scratch}
+  - id: report-generation
+    prompt: Aggregate the vulnerabilities confirmed by sandbox validation and generate the audit report.
+edges:
+  - {from: multi-agent-audit, to: sandbox-poc-validation}
+  - {from: sandbox-poc-validation, to: report-generation}

@@ -1,0 +1,22 @@
+# dynamictester: multi-SAST aggregation → LLM agent triage → Playwright browser dynamic verification (source doc: 03-open-source-code)
+name: dynamictester
+nodes:
+  - id: sast-aggregate
+    prompt: Aggregate results from the Semgrep/Trivy/CodeQL/Gitleaks/OSV scanners and write them to a shared volume for downstream consumption.
+    container:
+      image: semgrep/semgrep:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: dynamictester-shared, target: /shared}
+  - id: llm-agent
+    prompt: An LLM agent deduplicates, correlates, and prioritizes the aggregated alerts.
+  - id: playwright-dynamic-verify
+    prompt: Read the triage results from the shared volume and use Playwright to drive a browser for dynamic verification against the target web application.
+    container:
+      image: mcr.microsoft.com/playwright/python:latest
+      network: bridge
+      mounts:
+        - {type: volume, source: dynamictester-shared, target: /shared}
+edges:
+  - {from: sast-aggregate, to: llm-agent}
+  - {from: llm-agent, to: playwright-dynamic-verify}

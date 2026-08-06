@@ -1,0 +1,21 @@
+# NYU CTF Bench: per-challenge isolated container environment -> single-agent tool-loop solving -> automatic grading. Source document: 01-binary
+name: nyu_ctf_bench
+nodes:
+  - id: challenge-container
+    prompt: Start an isolated Docker environment for each CTF challenge, providing the challenge services and attachments.
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: volume, source: nyu-ctf-bench-shared, target: /shared}
+  - id: agent-solve-loop
+    prompt: A single agent loops over 6 function tools to interact with the challenge environment and solve for the flag; the inner solving loop is carried by LiteAgent max_iterations.
+    max_iterations: 20
+  - id: flag-checker
+    prompt: Automatically grade the submitted flag and output whether it is correct or not.
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: volume, source: nyu-ctf-bench-shared, target: /shared}
+edges:
+  - {from: challenge-container, to: agent-solve-loop}
+  - {from: agent-solve-loop, to: flag-checker}

@@ -1,0 +1,17 @@
+# Vulnhuntr: static scan identifies entry points and call chains -> LLM traces along call chains to dangerous sinks -> report. Source document: 01-binary
+name: vulnhuntr
+nodes:
+  - id: static-scan
+    prompt: Statically scan the target code to identify remote input entry points and related call chains.
+    container:
+      image: semgrep/semgrep:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+  - id: llm-chain-analysis
+    prompt: Trace step by step along the call chains from remote input entry points to dangerous sinks, iteratively supplementing context during analysis; the inner iteration is carried by LiteAgent max_iterations.
+    max_iterations: 10
+  - id: report
+    prompt: Aggregate the confirmed vulnerability chains into a report.
+edges:
+  - {from: static-scan, to: llm-chain-analysis}
+  - {from: llm-chain-analysis, to: report}

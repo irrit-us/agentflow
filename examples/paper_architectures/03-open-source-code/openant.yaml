@@ -1,0 +1,26 @@
+# OpenAnt: reachability pruning → unit generation → exposure classification → vulnerability detection → adversarial re-verification → dynamic confirmation (source doc: 03-open-source-code)
+name: openant
+nodes:
+  - id: reachability-filter
+    prompt: Perform reachability analysis based on the AST and call graph, pruning about 96.4% of unreachable code to shrink the audit surface.
+  - id: unit-generation
+    prompt: Slice self-contained analysis units with dependency depth no greater than 3 from the reachable code.
+  - id: exposure-classification
+    prompt: Classify the analysis units by exposure surface (network entry points, file inputs, etc.).
+  - id: vuln-detection
+    prompt: Detect potential vulnerabilities within the classified units and produce candidate findings.
+  - id: adversarial-verification
+    prompt: Adversarially re-verify candidate vulnerabilities from the perspective of a constrained remote attacker, filtering out conclusions the attacker cannot reach.
+  - id: dynamic-testing
+    prompt: Build an ephemeral Docker environment from scratch for each surviving vulnerability to dynamically confirm it; retries on failure up to 3 times, carried by this node's internal loop.
+    max_iterations: 4
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: bind, source: ./units, target: /units, read_only: true}
+edges:
+  - {from: reachability-filter, to: unit-generation}
+  - {from: unit-generation, to: exposure-classification}
+  - {from: exposure-classification, to: vuln-detection}
+  - {from: vuln-detection, to: adversarial-verification}
+  - {from: adversarial-verification, to: dynamic-testing}

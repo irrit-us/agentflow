@@ -1,0 +1,39 @@
+# BradMoon Harness: budgeted multi-scanner-agent audit — project decomposition → gap analysis → scanner agents (backed by knowledge cards / frozen kernel) → frozen verifier fail-closed verification → post-processing report. Source document: 06-practice.
+name: bradmoon-harness
+nodes:
+  - id: project-decomposition
+    prompt: Decompose the target project along business-flow slices combined with SAST and code-index axes, forming audit work units.
+    container:
+      image: semgrep/semgrep:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: bradmoon-harness-shared, target: /shared}
+  - id: gap-analysis
+    prompt: Analyze coverage gaps in the decomposition results and reallocate each scanner agent's audit budget accordingly.
+    depends_on: [project-decomposition]
+  - id: protocol-cards
+    prompt: Maintain on-demand-loadable protocol knowledge cards (protocol-cards), providing protocol background support to scanner agents.
+  - id: frozen-kernel
+    prompt: Provide frozen-kernel constraints that bound scanner agents' behavior and output contracts.
+  - id: scanner-agents
+    prompt: Each scanner agent loads protocol-cards on demand under frozen-kernel constraints and executes its assigned proof obligations.
+    depends_on: [gap-analysis, protocol-cards, frozen-kernel]
+    max_iterations: 10
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: bind, source: ./protocol_cards, target: /protocol_cards, read_only: true}
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: bradmoon-harness-shared, target: /shared}
+  - id: independent-verifier
+    prompt: "Independently re-verify findings submitted by scanner agents with a frozen verifier; fail-closed gate: any failed verification is rejected."
+    depends_on: [scanner-agents]
+    max_iterations: 5
+    container:
+      image: ghcr.io/foundry-rs/foundry:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: bradmoon-harness-shared, target: /shared}
+  - id: post-processing
+    prompt: Normalize and deduplicate verified findings, then generate the final audit report after human-intent confirmation as a fallback.
+    depends_on: [independent-verifier]
