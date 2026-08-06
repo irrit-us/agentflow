@@ -168,3 +168,30 @@ class TestHealthProbe:
         result = make_llm_health_probe(llm_client2)()
         assert result["status"] == "error"
         assert "connection refused" in result["error"]
+
+
+class TestReadOnlyGuard:
+    def test_mutating_methods_get_405(self):
+        client = TestClient(create_app(_finished_runner()))
+
+        for method in ("post", "put", "delete"):
+            for path in ("/api/state", "/api/nodes/a/inspect", "/api/health", "/api/blocked"):
+                response = getattr(client, method)(path)
+                assert response.status_code == 405, (method, path)
+                assert "read-only" in response.json()["detail"]
+
+    def test_get_and_head_still_work(self):
+        client = TestClient(create_app(_finished_runner()))
+
+        assert client.get("/api/state").status_code == 200
+        assert client.get("/api/nodes/a/inspect").status_code == 200
+        assert client.head("/api/state").status_code == 200
+
+    def test_api_routes_only_expose_safe_methods(self):
+        app = create_app(_finished_runner())
+
+        for route in app.routes:
+            path = getattr(route, "path", "")
+            methods = getattr(route, "methods", None)
+            if path.startswith("/api/") and methods is not None:
+                assert methods <= {"GET", "HEAD", "OPTIONS"}, (path, methods)

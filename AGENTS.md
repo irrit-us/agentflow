@@ -54,6 +54,9 @@ do not chase them, and do not let them block lite work.
    with the loop noted in the node prompt.
 9. **Git discipline.** Commit messages: English, imperative mood, matching repo history.
    Never commit or push unless the user explicitly asks.
+10. **Monitor stays read-only.** The lite HTTP server exposes GET/HEAD only, enforced by
+    middleware (405 for anything else); it is a monitor, not a control plane — do not add
+    mutating endpoints.
 
 ## Verification checklist before finishing lite work
 

@@ -6,16 +6,26 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from agentflow.lite.client import LiteLLMClient
 from agentflow.lite.runner import GraphRunner
 
+_ALLOWED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
 
 def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = None) -> FastAPI:
     app = FastAPI(title=f"lite-monitor:{runner.graph.name}")
 
-    @app.get("/api/health")
+    @app.middleware("http")
+    async def read_only_guard(request, call_next):
+        # Monitor only, read-only by design: reject every non-GET/HEAD/OPTIONS method.
+        if request.method not in _ALLOWED_METHODS:
+            return JSONResponse({"detail": "monitor API is read-only"}, status_code=405)
+        return await call_next(request)
+
+    @app.api_route("/api/health", methods=["GET", "HEAD"])
     def health() -> dict:
         if health_probe is None:
             llm: dict = {"status": "unknown"}
@@ -26,7 +36,7 @@ def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = No
                 llm = {"status": "error", "error": str(exc)}
         return {"status": "ok", "llm": llm}
 
-    @app.get("/api/state")
+    @app.api_route("/api/state", methods=["GET", "HEAD"])
     def state() -> dict:
         snapshot = runner.state.snapshot()["nodes"]
         nodes = [
@@ -47,11 +57,11 @@ def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = No
             "edges": [[src, dst] for src, dst in runner.graph.all_edges()],
         }
 
-    @app.get("/api/blocked")
+    @app.api_route("/api/blocked", methods=["GET", "HEAD"])
     def blocked() -> dict:
         return {"blocked": runner.blocked()}
 
-    @app.get("/api/nodes/{node_id}/inspect")
+    @app.api_route("/api/nodes/{node_id}/inspect", methods=["GET", "HEAD"])
     def inspect(node_id: str) -> dict:
         nrun = runner.state.snapshot()["nodes"].get(node_id)
         if nrun is None:

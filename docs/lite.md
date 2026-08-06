@@ -162,7 +162,9 @@ uvicorn.run(app, host="127.0.0.1", port=8600)
 
 The UI polls these endpoints, draws the DAG with draggable nodes (layout
 persisted in localStorage), a blocked-task sidebar, and a per-node inspect
-drawer with the full conversation.
+drawer with the full conversation. The HTTP API is intentionally read-only
+(GET/HEAD only); it serves monitoring only, and mutations are rejected with
+405.
 
 ## Examples
 
