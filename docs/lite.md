@@ -1,0 +1,173 @@
+# Lite: Direct LLM Agents
+
+`agentflow.lite` is a standalone subpackage: a direct OpenAI-compatible LLM
+client, a tool-calling agent loop, YAML-declared graph execution, and a
+browser monitor. It is fully independent of the CLI-agent orchestration in the
+main framework — use it for high-frequency, lightweight tasks where spawning a
+CLI agent process per node is too heavy, or when you want plain function
+calling against any OpenAI-compatible endpoint (OpenAI, vLLM, Ollama, LMStudio).
+
+```python
+from agentflow.lite import LiteLLMClient, LiteAgent, tool
+```
+
+## Client
+
+`LiteLLMClient` posts to `{base_url}/chat/completions` with retries on 429/5xx.
+The API key falls back to an environment variable; with no key at all, no
+`Authorization` header is sent (handy for local endpoints).
+
+```python
+from agentflow.lite import LiteLLMClient, Message
+
+client = LiteLLMClient(base_url="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY")
+result = client.chat([Message(role="user", content="ping")], model="gpt-4o-mini")
+print(result.message.content, result.usage.total_tokens)
+```
+
+## Tools
+
+`@tool` derives a JSON Schema from type annotations and the docstring;
+`ToolRegistry.dispatch` runs handlers and reports failures as `"Error: ..."`
+strings instead of raising.
+
+```python
+from agentflow.lite import ToolRegistry, ToolCall, tool
+
+@tool
+def add(a: int, b: int) -> int:
+    """Add two integers."""
+    return a + b
+
+registry = ToolRegistry([add])
+print(registry.dispatch(ToolCall(id="1", name="add", arguments={"a": 2, "b": 3})))  # "5"
+```
+
+## Agent
+
+`LiteAgent` runs the tool-calling loop: chat → dispatch tool calls → repeat,
+until the model answers plainly, `max_iterations` is hit, or the token budget
+raises `BudgetExceededError`.
+
+```python
+from agentflow.lite import LiteAgent
+
+agent = LiteAgent(
+    client=client,
+    model="gpt-4o-mini",
+    system_prompt="Answer concisely.",
+    tools=[add],
+    max_iterations=8,
+    max_total_tokens=20_000,
+)
+result = agent.run("What is 40 + 2?")
+print(result.text, result.iterations)
+```
+
+## Routing
+
+`ModelRouter` maps roles to ordered fallback chains of `ModelProfile`s; on
+`LLMError` it tries the next profile. Profiles carry default
+`temperature`/`max_tokens` that callers can override per chat.
+
+```python
+from agentflow.lite import ModelProfile, ModelRouter
+
+router = ModelRouter({
+    "fast": [
+        ModelProfile(name="local", model="qwen3-8b", base_url="http://localhost:8000/v1"),
+        ModelProfile(name="cloud", model="gpt-4o-mini", base_url="https://api.openai.com/v1",
+                     api_key_env="OPENAI_API_KEY"),
+    ],
+})
+result = router.chat("fast", [Message(role="user", content="ping")])
+```
+
+Pass `router=router, role="fast"` to `LiteAgent` instead of `client`/`model`.
+
+## Container execution
+
+`DockerExecutor` runs commands in ephemeral containers via the `docker` CLI
+(no Docker SDK). `container_shell_tool` wraps one as an agent tool named
+`run_command`; per-node containers in graphs get it automatically.
+
+```python
+from agentflow.lite import ContainerConfig, DockerExecutor, Mount
+
+executor = DockerExecutor(
+    ContainerConfig(
+        image="python:3.12-slim",
+        workspace=".",          # legacy -v mount, read-only by default
+        mounts=[Mount(type="bind", source="./kb", target="/kb", read_only=True)],
+    )
+)
+argv = executor.build_argv("ls /kb")  # inspect without Docker running
+```
+
+`Mount` covers all four `--mount` types: `bind` (host path), `volume` (named
+volume, shared rw between containers), `tmpfs` (in-memory scratch), `npipe`
+(Windows pipes). A `tmpfs` mount emits a `UserWarning`: its contents die with
+the container, so it cannot persist knowledge-base data or transfer data
+between containers. Defaults are audit-safe: `network="none"`, read-only
+workspace, `512m` memory, 1 CPU, 120s timeout.
+
+## Graphs from YAML
+
+Pipelines are declared as nodes and edges, loaded with `load_graph`, and
+executed by `GraphRunner` with dependency-ordered parallelism. `depends_on`
+and explicit `edges` are equivalent; `{{ nodes.<id>.text }}` references
+upstream results.
+
+```yaml
+name: audit
+nodes:
+  - id: scan
+    prompt: List suspicious calls in this repo.
+  - id: report
+    prompt: "Summarize: {{ nodes.scan.text }}"
+    depends_on: [scan]
+```
+
+```python
+from agentflow.lite import GraphRunner, load_graph, make_agent_factory
+
+graph = load_graph("pipeline.yaml")
+factory = make_agent_factory(client=client, default_model="gpt-4o-mini")
+runner = GraphRunner(graph, factory)
+runner.run_in_background()   # or runner.run() to block
+print(runner.is_done(), runner.blocked())
+```
+
+A node may set `container: {image: ..., mounts: [...]}` to get its own
+`run_command` sandbox tool, and `tools: [name, ...]` to pick from a shared
+registry passed to `make_agent_factory(registry=...)`.
+
+## Monitor
+
+`create_app` serves a JSON API plus a static single-page UI
+(`agentflow/lite/web/index.html`, offline, no CDN):
+
+```python
+import uvicorn
+from agentflow.lite import create_app, make_llm_health_probe
+
+app = create_app(runner, health_probe=make_llm_health_probe(client))
+uvicorn.run(app, host="127.0.0.1", port=8600)
+```
+
+- `GET /api/health` — server status plus LLM probe result (latency or error)
+- `GET /api/state` — graph name, done flag, per-node status/usage, edge list
+- `GET /api/blocked` — preparing nodes and the dependencies they wait on
+- `GET /api/nodes/{id}/inspect` — full message history, usage, and error of one node
+
+The UI polls these endpoints, draws the DAG with draggable nodes (layout
+persisted in localStorage), a blocked-task sidebar, and a per-node inspect
+drawer with the full conversation.
+
+## Examples
+
+- `examples/lite_agent_demo.py` — single agent with file tools
+- `examples/lite_container_demo.py` — tool calls sandboxed in Docker
+- `examples/lite_volumes_demo.py` — bind/volume mounts for RAG and data transfer
+- `examples/lite_pipeline_demo.py` — YAML graph + monitor server
+- `examples/paper_architectures/` — 47 paper architecture graphs (build-only scaffold)

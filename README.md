@@ -189,6 +189,24 @@ impl = codex(task_id="impl", prompt="...", target={"kind": "ec2", "shared": "dev
 plan >> impl  # same EC2 instance, files persist
 ```
 
+## Lite: Direct LLM Agents
+
+`agentflow.lite` is a standalone subpackage for talking to any OpenAI-compatible endpoint directly — no CLI agent processes. It bundles a minimal HTTP client with retries, a tool-calling agent loop, YAML-declared graph execution with dependency-ordered parallelism, optional Docker-sandboxed tools, and a browser monitor. Use it for high-frequency, lightweight tasks where spawning a full CLI agent per node is too heavy.
+
+```python
+from agentflow.lite import LiteAgent, LiteLLMClient, tool
+
+@tool
+def add(a: int, b: int) -> int:
+    """Add two integers."""
+    return a + b
+
+client = LiteLLMClient(base_url="https://api.openai.com/v1", api_key_env="OPENAI_API_KEY")
+result = LiteAgent(client=client, model="gpt-4o-mini", tools=[add]).run("What is 40 + 2?")
+```
+
+See [docs/lite.md](docs/lite.md) for routing, containers, YAML graphs, and the monitor.
+
 ## Scratchboard
 
 Shared memory file across all agents:
@@ -238,6 +256,7 @@ Successful evolutions are stored under `.agentflow/tuned_agents/<name>/versions/
 | `airflow_like_fuzz_grouped.py` | Matrix fanout with grouped reducers |
 | `ec2_remote.py` | Run codex on a remote EC2 instance |
 | `ecs_fargate.py` | Run codex on ECS Fargate |
+| `paper_architectures/` | 47 paper security-architecture graphs in agentflow.lite YAML (build-only scaffold) |
 
 ## Graph Optimization Rounds
 
