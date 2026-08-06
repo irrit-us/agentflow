@@ -1,0 +1,29 @@
+# 三节点安全审计流水线：scan → analyze → report。
+# scan → analyze 用显式 edges 声明，report 用 depends_on 声明（两种写法等价）。
+name: lite-audit
+nodes:
+  - id: scan
+    prompt: |
+      扫描当前仓库的 Python 代码，找出可疑的危险调用（如 subprocess、eval、exec、
+      pickle.loads），逐条列出文件与行号。如果没有发现，回复 "NONE"。
+    system_prompt: 你是安全审计员，只做只读分析，结论要给出证据位置。
+    max_iterations: 8
+  - id: analyze
+    prompt: |
+      以下是扫描结果：
+
+      {{ nodes.scan.text }}
+
+      逐条判断是否为真实可利用风险，按严重程度排序，并说明理由。
+    max_iterations: 6
+  - id: report
+    prompt: |
+      根据下面的分析结果生成一份中文审计报告，包含摘要、风险清单与修复建议：
+
+      {{ nodes.analyze.text }}
+    depends_on:
+      - analyze
+    max_total_tokens: 20000
+edges:
+  - from: scan
+    to: analyze
