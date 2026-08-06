@@ -1,0 +1,4 @@
+# Normalize shell scripts and mock agent binaries to LF so Linux containers
+# can execute them directly (CRLF breaks the shebang and bash option parsing).
+*.sh text eol=lf
+tests/e2e/bin/* text eol=lf

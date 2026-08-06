@@ -42,6 +42,8 @@ class AgentKind(StrEnum):
     CLAUDE = "claude"
     KIMI = "kimi"
     PI = "pi"
+    OPENCODE = "opencode"
+    GOOSE = "goose"
     PYTHON = "python"
     SHELL = "shell"
     SYNC = "sync"
@@ -280,14 +282,14 @@ def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind)
         return ProviderConfig(name=value)
 
     alias = value.strip().lower()
-    if alias == "openai" and resolved_agent == AgentKind.CODEX:
+    if alias == "openai" and resolved_agent in {AgentKind.CODEX, AgentKind.OPENCODE, AgentKind.GOOSE}:
         return ProviderConfig(
             name="openai",
             base_url="https://api.openai.com/v1",
             api_key_env="OPENAI_API_KEY",
             wire_api="responses",
         )
-    if alias == "anthropic" and resolved_agent == AgentKind.CLAUDE:
+    if alias == "anthropic" and resolved_agent in {AgentKind.CLAUDE, AgentKind.OPENCODE, AgentKind.GOOSE}:
         return ProviderConfig(
             name="anthropic",
             base_url="https://api.anthropic.com",
@@ -1345,6 +1347,17 @@ def _local_target_defaults_payload(value: Any) -> dict[str, Any] | None:
     return payload
 
 
+def _container_target_defaults_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, ContainerTarget):
+        payload = value.model_dump(mode="python")
+    elif isinstance(value, dict):
+        payload = dict(value)
+    else:
+        return None
+    payload.setdefault("kind", "container")
+    return payload
+
+
 def _node_default_payload(
     value: Any,
     *,
@@ -1533,6 +1546,56 @@ def apply_local_target_defaults(payload: dict[str, Any]) -> dict[str, Any]:
     return resolved
 
 
+def apply_container_target_defaults(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply graph-level ``container_target_defaults`` to container nodes.
+
+    Nodes without a ``target`` inherit the container defaults; nodes with an
+    explicit ``container`` target merge the defaults underneath their own
+    overrides. Non-container targets are left untouched.
+    """
+    resolved = dict(payload)
+    container_target_defaults = _container_target_defaults_payload(
+        resolved.get("container_target_defaults")
+    )
+
+    nodes = resolved.get("nodes")
+    if not isinstance(nodes, list):
+        return resolved
+
+    merged_nodes: list[Any] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            merged_nodes.append(node)
+            continue
+
+        updated_node = dict(node)
+        target = updated_node.get("target")
+        if target is None:
+            if container_target_defaults is None:
+                merged_nodes.append(updated_node)
+                continue
+            updated_node["target"] = dict(container_target_defaults)
+            merged_nodes.append(updated_node)
+            continue
+
+        raw_kind = target.get("kind") if isinstance(target, dict) else getattr(target, "kind", None)
+        if raw_kind != "container":
+            merged_nodes.append(updated_node)
+            continue
+        if container_target_defaults is None:
+            merged_nodes.append(updated_node)
+            continue
+
+        target_payload = _container_target_defaults_payload(target)
+        merged_target = dict(container_target_defaults)
+        merged_target.update(target_payload)
+        updated_node["target"] = merged_target
+        merged_nodes.append(updated_node)
+
+    resolved["nodes"] = merged_nodes
+    return resolved
+
+
 def _template_id_references(prompt: str) -> tuple[set[str], set[str], set[str], set[str]]:
     """Extract template references from a node prompt.
 
@@ -1683,6 +1746,7 @@ class PipelineSpec(BaseModel):
     node_defaults: dict[str, Any] | None = None
     agent_defaults: dict[str, dict[str, Any]] = Field(default_factory=dict)
     local_target_defaults: LocalTarget | None = None
+    container_target_defaults: ContainerTarget | None = None
     inference: InferenceSetupSpec | None = None
     fanouts: dict[str, list[str]] = Field(default_factory=dict)
     nodes: list[NodeSpec]
@@ -1696,6 +1760,7 @@ class PipelineSpec(BaseModel):
         base_dir = payload.pop("base_dir", None)
         expanded = expand_compact_nodes(payload, base_dir=base_dir)
         expanded = apply_node_defaults(expanded)
+        expanded = apply_container_target_defaults(expanded)
         return apply_local_target_defaults(expanded)
 
     @field_validator("score", mode="before")

@@ -42,11 +42,11 @@ class PiAdapter(AgentAdapter):
 
         if scoped_home_needed:
             pi_home_relative = Path("pi-home") / "agent"
-            models_rel = self.relative_runtime_file(str(pi_home_relative), "models.json")
-            settings_rel = self.relative_runtime_file(str(pi_home_relative), "settings.json")
+            models_rel = self.relative_runtime_file(*pi_home_relative.parts, "models.json")
+            settings_rel = self.relative_runtime_file(*pi_home_relative.parts, "settings.json")
             runtime_files[models_rel] = self._render_models_json(provider, node.model)
             runtime_files[settings_rel] = "{}\n"
-            env["PI_CODING_AGENT_DIR"] = str(Path(paths.target_runtime_dir) / pi_home_relative)
+            env["PI_CODING_AGENT_DIR"] = self.target_path(paths, *pi_home_relative.parts)
         elif provider and provider.name and "/" not in (node.model or ""):
             command.extend(["--provider", provider.name])
 
@@ -68,7 +68,7 @@ class PiAdapter(AgentAdapter):
 
         cwd = paths.target_workdir
         if repo_instructions_ignored:
-            cwd = str(Path(paths.target_runtime_dir))
+            cwd = self.target_path(paths)
 
         # Pass the prompt via stdin so it is never parsed as a flag or `@file`
         # reference by Pi's positional-message argument handling.
@@ -94,7 +94,9 @@ class PiAdapter(AgentAdapter):
             "api": provider.wire_api or "openai-completions",
         }
         if provider.api_key_env:
-            entry["apiKey"] = provider.api_key_env
+            # Pi interpolates `$NAME` / `${NAME}` references against the process
+            # environment; a bare name would be treated as a literal key value.
+            entry["apiKey"] = f"${{{provider.api_key_env}}}"
         if provider.headers:
             entry["headers"] = dict(provider.headers)
             entry["authHeader"] = True

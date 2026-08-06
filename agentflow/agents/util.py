@@ -16,7 +16,7 @@ class PythonAdapter:
         return PreparedExecution(
             command=["python3", "-c", prompt],
             env=dict(node.env or {}),
-            cwd=str(paths.host_workdir),
+            cwd=str(paths.target_workdir),
             trace_kind="python",
             runtime_files={},
             stdin=None,
@@ -30,7 +30,7 @@ class ShellAdapter:
         return PreparedExecution(
             command=["bash", "-c", prompt],
             env=dict(node.env or {}),
-            cwd=str(paths.host_workdir),
+            cwd=str(paths.target_workdir),
             trace_kind="shell",
             runtime_files={},
             stdin=None,

@@ -114,3 +114,109 @@ def test_pi_trace_parser_prefers_agent_end_when_present():
         "]}"
     )
     assert parser.finalize() == "final answer"
+
+
+def test_opencode_trace_parser_extracts_completed_text_parts():
+    parser = create_trace_parser(AgentKind.OPENCODE, "plan")
+    events = parser.feed(
+        '{"type":"message.part.updated","part":{"type":"text","text":"opencode ok","state":"completed"}}'
+    )
+    assert events[0].kind == "assistant_delta"
+    assert events[0].content == "opencode ok"
+    assert parser.finalize() == "opencode ok"
+
+
+def test_opencode_trace_parser_unwraps_payload_envelope():
+    parser = create_trace_parser(AgentKind.OPENCODE, "plan")
+    parser.feed(
+        '{"payload":{"type":"message.part.updated","part":{"type":"text","text":"wrapped","state":"completed"}}}'
+    )
+    assert parser.finalize() == "wrapped"
+
+
+def test_opencode_trace_parser_ignores_incomplete_text_parts():
+    parser = create_trace_parser(AgentKind.OPENCODE, "plan")
+    parser.feed(
+        '{"type":"message.part.updated","part":{"type":"text","text":"partial","state":"streaming"}}'
+    )
+    assert parser.finalize() == ""
+
+
+def test_opencode_trace_parser_joins_text_parts_on_message_updated():
+    parser = create_trace_parser(AgentKind.OPENCODE, "plan")
+    events = parser.feed(
+        '{"type":"message.updated","message":{"parts":['
+        '{"type":"text","text":"Hello"},'
+        '{"type":"text","text":" world"},'
+        '{"type":"tool","tool":"read"}]}}'
+    )
+    assert events[0].kind == "assistant_message"
+    assert events[0].content == "Hello world"
+    assert parser.finalize() == "Hello world"
+
+
+def test_opencode_trace_parser_accumulates_deltas():
+    parser = create_trace_parser(AgentKind.OPENCODE, "plan")
+    parser.feed('{"type":"message.part.delta","part":{"type":"text","delta":"Hello"}}')
+    parser.feed('{"type":"message.part.delta","part":{"type":"text","delta":" world"}}')
+    assert parser.finalize() == "Hello\nworld"
+
+
+def test_opencode_trace_parser_emits_session_and_tool_events():
+    parser = create_trace_parser(AgentKind.OPENCODE, "plan")
+    idle = parser.feed('{"type":"session.idle"}')
+    assert idle[0].kind == "event"
+    assert idle[0].title == "Session idle"
+
+    tool = parser.feed('{"type":"tool.execute.before","tool":{"title":"read"}}')
+    assert tool[0].kind == "tool_call"
+    assert tool[0].title == "Tool Execute Before"
+
+    error = parser.feed('{"type":"error","error":{"message":"boom"}}')
+    assert error[0].kind == "error"
+
+
+def test_opencode_trace_parser_handles_step_text_schema():
+    parser = create_trace_parser(AgentKind.OPENCODE, "plan")
+    start = parser.feed('{"type":"step_start"}')
+    assert start[0].kind == "event"
+    assert start[0].title == "step-start"
+
+    text = parser.feed('{"type":"text","part":{"type":"text","text":"OK"}}')
+    assert text[0].kind == "assistant_message"
+    assert text[0].content == "OK"
+
+    finish = parser.feed('{"type":"step_finish"}')
+    assert finish[0].kind == "event"
+    assert parser.finalize() == "OK"
+
+
+def test_opencode_trace_parser_step_text_ignores_empty_parts():
+    parser = create_trace_parser(AgentKind.OPENCODE, "plan")
+    parser.feed('{"type":"text","part":{"type":"text","text":""}}')
+    assert parser.finalize() == ""
+
+
+def test_goose_trace_parser_extracts_message_content_text_parts():
+    parser = create_trace_parser(AgentKind.GOOSE, "review")
+    events = parser.feed(
+        '{"type":"message","message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"goose answer"}]}}'
+    )
+    assert events[0].kind == "assistant_message"
+    assert events[0].content == "goose answer"
+    assert parser.finalize() == "goose answer"
+
+
+def test_goose_trace_parser_emits_complete_event():
+    parser = create_trace_parser(AgentKind.GOOSE, "review")
+    events = parser.feed('{"type":"complete"}')
+    assert events[0].kind == "event"
+    assert events[0].title == "Complete"
+
+
+def test_goose_trace_parser_emits_error_event():
+    parser = create_trace_parser(AgentKind.GOOSE, "review")
+    events = parser.feed('{"type":"error","error":"goose exploded"}')
+    assert events[0].kind == "error"
+    assert events[0].content == "goose exploded"

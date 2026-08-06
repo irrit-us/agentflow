@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from agentflow.agents.claude import ClaudeAdapter
 from agentflow.agents.codex import CodexAdapter
+from agentflow.agents.goose import GooseAdapter
 from agentflow.agents.kimi import KimiAdapter
+from agentflow.agents.opencode import OpenCodeAdapter
 from agentflow.agents.pi import PiAdapter
+from agentflow.agents.util import PythonAdapter, ShellAdapter
 from agentflow.prepared import ExecutionPaths
 from agentflow.specs import NodeSpec
 
 import pytest
+import yaml
 
 
 def _paths(tmp_path: Path) -> ExecutionPaths:
@@ -164,7 +169,12 @@ def test_codex_adapter_isolates_home_when_runtime_codex_home_is_used(tmp_path):
     expected_home = str(tmp_path / ".runtime" / "codex_home")
     assert prepared.env["CODEX_HOME"] == expected_home
     assert prepared.env["HOME"] == expected_home
-    assert prepared.runtime_files.keys() == {"codex_home/config.toml"}
+    assert prepared.runtime_files.keys() == {
+        "codex_home/config.toml",
+        "codex_home/agentflow.config.toml",
+    }
+    profile_cfg = prepared.runtime_files["codex_home/agentflow.config.toml"]
+    assert 'model_provider = "openai-pinned"' in profile_cfg
 
 
 def test_codex_adapter_can_ignore_repo_instructions_with_isolated_runtime_cwd(tmp_path):
@@ -260,7 +270,8 @@ def test_claude_adapter_supports_kimi_provider_alias(tmp_path, monkeypatch):
     assert prepared.env["ANTHROPIC_API_KEY"] == "test-kimi-secret"
 
 
-def test_kimi_adapter_uses_kimi_cli_directly(tmp_path):
+def test_kimi_adapter_uses_kimi_cli_directly(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENTFLOW_KIMI_EXECUTABLE", raising=False)
     node = NodeSpec.model_validate(
         {
             "id": "review",
@@ -461,6 +472,29 @@ def test_kimi_adapter_prefers_node_env_over_provider_env(tmp_path):
     assert prepared.env["KIMI_API_KEY"] == "node-secret"
 
 
+def test_kimi_adapter_surfaces_provider_base_url_and_model_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    node = NodeSpec.model_validate(
+        {
+            "id": "review",
+            "agent": "kimi",
+            "prompt": "Review",
+            "model": "deepseek-chat",
+            "provider": {
+                "name": "deepseek",
+                "base_url": "https://api.deepseek.com/v1",
+                "api_key_env": "DEEPSEEK_API_KEY",
+            },
+        }
+    )
+
+    prepared = KimiAdapter().prepare(node, "Review", _paths(tmp_path))
+
+    assert prepared.env["KIMI_API_KEY"] == "deepseek-secret"
+    assert prepared.env["KIMI_BASE_URL"] == "https://api.deepseek.com/v1"
+    assert prepared.env["KIMI_MODEL_NAME"] == "deepseek-chat"
+
+
 def test_pi_adapter_uses_pi_cli_directly(tmp_path):
     node = NodeSpec.model_validate({"id": "review", "agent": "pi", "prompt": "Review"})
     prepared = PiAdapter().prepare(node, "Review", _paths(tmp_path))
@@ -551,19 +585,19 @@ def test_pi_adapter_materializes_scoped_models_json(tmp_path):
     assert "--provider" not in prepared.command
     assert "PI_CODING_AGENT_DIR" in prepared.env
     scoped_dir = prepared.env["PI_CODING_AGENT_DIR"]
-    assert scoped_dir.endswith("/pi-home/agent")
+    assert scoped_dir.replace(os.sep, "/").endswith("/pi-home/agent")
 
-    models_rel = str(Path("pi-home") / "agent" / "models.json")
+    models_rel = "pi-home/agent/models.json"
     assert models_rel in prepared.runtime_files
     parsed = json.loads(prepared.runtime_files[models_rel])
     entry = parsed["providers"]["lmstudio-remote"]
     assert entry["baseUrl"] == "http://192.168.1.42:1234/v1"
     assert entry["api"] == "openai-completions"
-    assert entry["apiKey"] == "LMSTUDIO_API_KEY"
+    assert entry["apiKey"] == "${LMSTUDIO_API_KEY}"
     # Provider prefix is stripped from model id in the scoped entry.
     assert entry["models"] == [{"id": "qwen3.6-27b"}]
 
-    settings_rel = str(Path("pi-home") / "agent" / "settings.json")
+    settings_rel = "pi-home/agent/settings.json"
     assert settings_rel in prepared.runtime_files
 
 
@@ -630,3 +664,490 @@ def test_pi_adapter_preserves_extra_args(tmp_path):
     prepared = PiAdapter().prepare(node, "Scan", _paths(tmp_path))
 
     assert prepared.command[-2:] == ["--thinking", "high"]
+
+
+def test_opencode_adapter_builds_run_command_with_prompt_last(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.command[:5] == ["opencode", "run", "--format", "json", "--auto"]
+    assert prepared.command[-1] == "Plan"
+
+
+def test_opencode_adapter_passes_model_and_extra_args(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+            "model": "gpt-5.2",
+            "extra_args": ["--agent", "build"],
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    model_idx = prepared.command.index("--model")
+    assert prepared.command[model_idx + 1] == "gpt-5.2"
+    assert "--agent" in prepared.command
+    assert prepared.command[-1] == "Plan"
+
+
+def test_opencode_adapter_respects_custom_executable(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+            "executable": "/usr/local/bin/opencode",
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.command[0] == "/usr/local/bin/opencode"
+
+
+def test_opencode_adapter_ignores_repo_instructions_without_dir_flag(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+            "repo_instructions_mode": "ignore",
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert "--dir" not in prepared.command
+    assert prepared.cwd == str(tmp_path / ".runtime")
+
+
+def test_opencode_adapter_surfaces_provider_base_url_and_api_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "opencode-secret")
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+            "provider": {
+                "name": "openai",
+                "base_url": "https://api.openai.com/v1",
+                "api_key_env": "OPENAI_API_KEY",
+            },
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.env["OPENAI_BASE_URL"] == "https://api.openai.com/v1"
+    assert prepared.env["OPENAI_API_KEY"] == "opencode-secret"
+
+
+def test_opencode_adapter_uses_anthropic_env_for_anthropic_provider(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "opencode-anthropic-secret")
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+            "provider": {
+                "name": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "api_key_env": "ANTHROPIC_API_KEY",
+            },
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.env["ANTHROPIC_BASE_URL"] == "https://api.anthropic.com"
+    assert prepared.env["ANTHROPIC_API_KEY"] == "opencode-anthropic-secret"
+
+
+def test_opencode_adapter_materializes_mcp_config(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+            "mcps": [
+                {
+                    "name": "filesystem",
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                    "env": {"FOO": "bar"},
+                },
+                {
+                    "name": "search",
+                    "transport": "streamable_http",
+                    "url": "https://example.test/mcp",
+                    "headers": {"Authorization": "Bearer x"},
+                },
+            ],
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert "opencode.json" in prepared.runtime_files
+    assert prepared.env["OPENCODE_CONFIG"] == str(tmp_path / ".runtime" / "opencode.json")
+    config = json.loads(prepared.runtime_files["opencode.json"])
+    assert config["mcp"]["filesystem"] == {
+        "type": "local",
+        "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem"],
+        "environment": {"FOO": "bar"},
+    }
+    assert config["mcp"]["search"] == {
+        "type": "remote",
+        "url": "https://example.test/mcp",
+        "headers": {"Authorization": "Bearer x"},
+    }
+
+
+def test_opencode_adapter_materializes_custom_provider_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+            "model": "deepseek-chat",
+            "provider": {
+                "name": "deepseek",
+                "base_url": "https://api.deepseek.com/v1",
+                "api_key_env": "DEEPSEEK_API_KEY",
+            },
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    model_idx = prepared.command.index("--model")
+    assert prepared.command[model_idx + 1] == "deepseek/deepseek-chat"
+    assert "opencode.json" in prepared.runtime_files
+    assert prepared.env["OPENCODE_CONFIG"] == str(tmp_path / ".runtime" / "opencode.json")
+    config = json.loads(prepared.runtime_files["opencode.json"])
+    provider_entry = config["provider"]["deepseek"]
+    assert provider_entry["npm"] == "@ai-sdk/openai-compatible"
+    assert provider_entry["options"] == {
+        "baseURL": "https://api.deepseek.com/v1",
+        "apiKey": "{env:DEEPSEEK_API_KEY}",
+    }
+    assert provider_entry["models"]["deepseek-chat"]["limit"] == {"context": 65536, "output": 8192}
+
+
+def test_opencode_adapter_uses_anthropic_provider_package(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "opencode-anthropic-secret")
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+            "model": "claude-sonnet-4-5",
+            "provider": {
+                "name": "anthropic",
+                "base_url": "https://api.anthropic.com",
+                "api_key_env": "ANTHROPIC_API_KEY",
+            },
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    model_idx = prepared.command.index("--model")
+    assert prepared.command[model_idx + 1] == "anthropic/claude-sonnet-4-5"
+    config = json.loads(prepared.runtime_files["opencode.json"])
+    provider_entry = config["provider"]["anthropic"]
+    assert provider_entry["npm"] == "@ai-sdk/anthropic"
+    assert provider_entry["options"]["baseURL"] == "https://api.anthropic.com"
+
+
+def test_opencode_adapter_merges_mcp_and_provider_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-secret")
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "opencode",
+            "prompt": "Plan",
+            "model": "deepseek-chat",
+            "provider": {
+                "name": "deepseek",
+                "base_url": "https://api.deepseek.com/v1",
+                "api_key_env": "DEEPSEEK_API_KEY",
+            },
+            "mcps": [
+                {
+                    "name": "filesystem",
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                }
+            ],
+        }
+    )
+
+    prepared = OpenCodeAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    config = json.loads(prepared.runtime_files["opencode.json"])
+    assert "provider" in config
+    assert "mcp" in config
+    assert config["mcp"]["filesystem"]["command"] == ["npx", "-y", "@modelcontextprotocol/server-filesystem"]
+
+
+def test_goose_adapter_builds_run_command(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.command[:5] == ["goose", "run", "--no-session", "--output-format", "stream-json"]
+    assert "-t" in prepared.command
+    text_idx = prepared.command.index("-t")
+    assert prepared.command[text_idx + 1] == "Plan"
+
+
+def test_goose_adapter_sets_env_defaults(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.env["GOOSE_MODE"] == "auto"
+    assert prepared.env["GOOSE_DISABLE_KEYRING"] == "1"
+    assert prepared.env["GOOSE_TELEMETRY_OFF"] == "1"
+    assert prepared.env["GOOSE_WORKING_DIR"] == str(tmp_path)
+
+
+def test_goose_adapter_passes_provider_and_model(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5",
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    provider_idx = prepared.command.index("--provider")
+    assert prepared.command[provider_idx + 1] == "anthropic"
+    model_idx = prepared.command.index("--model")
+    assert prepared.command[model_idx + 1] == "claude-sonnet-4-5"
+
+
+def test_goose_adapter_skips_provider_flag_for_prefixed_model(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+            "provider": "anthropic",
+            "model": "anthropic/claude-sonnet-4-5",
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert "--provider" not in prepared.command
+    model_idx = prepared.command.index("--model")
+    assert prepared.command[model_idx + 1] == "anthropic/claude-sonnet-4-5"
+
+
+def test_goose_adapter_ignores_repo_instructions_without_working_dir(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+            "repo_instructions_mode": "ignore",
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.cwd == str(tmp_path / ".runtime")
+    assert "GOOSE_WORKING_DIR" not in prepared.env
+
+
+def test_goose_adapter_forwards_api_key_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("GOOSE_API_KEY", "goose-secret")
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+            "provider": {
+                "name": "openai",
+                "api_key_env": "GOOSE_API_KEY",
+            },
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.env.get("GOOSE_API_KEY") == "goose-secret"
+
+
+def test_goose_adapter_forwards_openai_base_url(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+            "provider": {
+                "name": "openai",
+                "base_url": "https://api.deepseek.com/v1",
+                "api_key_env": "OPENAI_API_KEY",
+            },
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.env.get("OPENAI_BASE_URL") == "https://api.deepseek.com/v1"
+    assert "ANTHROPIC_BASE_URL" not in prepared.env
+
+
+def test_goose_adapter_forwards_anthropic_base_url(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+            "provider": {
+                "name": "anthropic",
+                "base_url": "https://api.deepseek.com/anthropic",
+                "api_key_env": "ANTHROPIC_API_KEY",
+                "wire_api": "anthropic",
+            },
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.env.get("ANTHROPIC_BASE_URL") == "https://api.deepseek.com/anthropic"
+    assert "OPENAI_BASE_URL" not in prepared.env
+
+
+def test_goose_adapter_maps_anthropic_prefixed_model_to_anthropic_base_url(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+            "model": "anthropic/claude-sonnet-4-5",
+            "provider": {
+                "name": "deepseek",
+                "base_url": "https://api.deepseek.com/anthropic",
+            },
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.env.get("ANTHROPIC_BASE_URL") == "https://api.deepseek.com/anthropic"
+
+
+def test_goose_adapter_materializes_mcp_config_with_isolated_home(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan",
+            "agent": "goose",
+            "prompt": "Plan",
+            "mcps": [
+                {
+                    "name": "filesystem",
+                    "transport": "stdio",
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+                    "env": {"FOO": "bar"},
+                },
+                {
+                    "name": "search",
+                    "transport": "streamable_http",
+                    "url": "https://example.test/mcp",
+                    "headers": {"Authorization": "Bearer x"},
+                },
+            ],
+        }
+    )
+
+    prepared = GooseAdapter().prepare(node, "Plan", _paths(tmp_path))
+
+    assert prepared.env["HOME"] == str(tmp_path / ".runtime" / "goose_home")
+    config_rel = "goose_home/.config/goose/config.yaml"
+    assert config_rel in prepared.runtime_files
+    config = yaml.safe_load(prepared.runtime_files[config_rel])
+    assert config["extensions"]["filesystem"] == {
+        "type": "stdio",
+        "cmd": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem"],
+        "envs": {"FOO": "bar"},
+    }
+    assert config["extensions"]["search"] == {
+        "type": "streamable_http",
+        "uri": "https://example.test/mcp",
+        "headers": {"Authorization": "Bearer x"},
+    }
+
+
+def _container_paths(tmp_path: Path) -> ExecutionPaths:
+    return ExecutionPaths(
+        host_workdir=tmp_path,
+        host_runtime_dir=tmp_path / ".runtime",
+        target_workdir="/workspace",
+        target_runtime_dir="/agentflow-runtime",
+        app_root=tmp_path,
+    )
+
+
+def test_shell_adapter_uses_container_target_workdir(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "scan",
+            "agent": "shell",
+            "prompt": "echo hi",
+            "target": {"kind": "container", "image": "agentflow-shell:bookworm-slim"},
+        }
+    )
+
+    prepared = ShellAdapter().prepare(node, "echo hi", _container_paths(tmp_path))
+
+    assert prepared.cwd == "/workspace"
+
+
+def test_python_adapter_uses_container_target_workdir(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "compute",
+            "agent": "python",
+            "prompt": "print('hi')",
+            "target": {"kind": "container", "image": "agentflow-python:bookworm-slim"},
+        }
+    )
+
+    prepared = PythonAdapter().prepare(node, "print('hi')", _container_paths(tmp_path))
+
+    assert prepared.cwd == "/workspace"

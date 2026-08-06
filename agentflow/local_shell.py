@@ -621,7 +621,7 @@ def _resolve_shell_path(
     elif normalized.startswith("~/"):
         expanded = str(resolved_home / normalized[2:])
     else:
-        expanded = _HOME_REFERENCE_PATTERN.sub(str(resolved_home), normalized)
+        expanded = _HOME_REFERENCE_PATTERN.sub(lambda _match: str(resolved_home), normalized)
         expanded = _expand_shell_path_env_references(expanded, env)
         expanded = os.path.expanduser(expanded)
     candidate = Path(expanded)

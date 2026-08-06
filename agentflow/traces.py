@@ -344,6 +344,150 @@ class PiTraceParser(BaseTraceParser):
 
 
 @dataclass(slots=True)
+class OpenCodeTraceParser(BaseTraceParser):
+    """Parser for the OpenCode CLI's ``--format json`` NDJSON event stream.
+
+    OpenCode emits ``message.part.updated`` (full text snapshot per part),
+    optionally ``message.part.delta`` (incremental delta), ``message.updated``
+    (authoritative message with all parts), and ``session.idle`` when the
+    session finishes. Newer builds (>= 1.18) emit ``step_start`` / ``text`` /
+    ``step_finish`` events where ``part.type == "text"`` carries the assistant
+    text. Full snapshots are only remembered at part completion so the final
+    output is not duplicated.
+    """
+
+    def supports_raw_stdout_fallback(self) -> bool:
+        return False
+
+    def _extract_text_parts(self, parts: Any) -> str:
+        if not isinstance(parts, list):
+            return ""
+        return "".join(
+            part.get("text", "")
+            for part in parts
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+
+    def feed(self, line: str) -> list[NormalizedTraceEvent]:
+        payload = _json(line)
+        if payload is None:
+            text = line.rstrip()
+            self.remember(text)
+            return [self.emit("stdout", "stdout", text, line)] if text else []
+        if not isinstance(payload, dict):
+            payload = {}
+
+        inner = payload
+        if "type" not in payload and isinstance(payload.get("payload"), dict) and "type" in payload["payload"]:
+            inner = payload["payload"]
+        event_type = inner.get("type") or "opencode"
+        events: list[NormalizedTraceEvent] = []
+
+        if event_type in {"step_start", "step_finish"}:
+            title = str(event_type).replace("_", "-")
+            events.append(self.emit("event", title, _stringify(inner.get("part") or inner), payload))
+            return events
+
+        if event_type == "text":
+            part = inner.get("part") or {}
+            text = _stringify(part.get("text"))
+            if text and text != self.last_message:
+                self.remember(text)
+            events.append(self.emit("assistant_message", "Assistant message", text, payload))
+            return events
+
+        if event_type == "message.part.updated":
+            part = inner.get("part") or {}
+            if part.get("type") == "text":
+                text = _stringify(part.get("text"))
+                if part.get("state") == "completed" and text and text != self.last_message:
+                    self.remember(text)
+                events.append(self.emit("assistant_delta", "Assistant delta", text, payload))
+            return events
+
+        if event_type == "message.part.delta":
+            part = inner.get("part") or {}
+            text = _stringify(part.get("delta"))
+            self.remember(text)
+            events.append(self.emit("assistant_delta", "Assistant delta", text, payload))
+            return events
+
+        if event_type == "message.updated":
+            message = inner.get("message") or {}
+            text = self._extract_text_parts(message.get("parts"))
+            if text and text != self.last_message:
+                self.remember(text)
+            events.append(self.emit("assistant_message", "Assistant message", text, payload))
+            return events
+
+        if event_type == "session.idle":
+            events.append(self.emit("event", "Session idle", None, payload))
+            return events
+
+        if event_type in {"tool.execute.before", "tool.execute.after"}:
+            title = event_type.replace(".", " ").replace("_", " ").title()
+            events.append(self.emit("tool_call", title, _stringify(inner.get("tool") or inner), payload))
+            return events
+
+        if event_type == "permission.updated":
+            events.append(self.emit("event", "Permission updated", _stringify(inner.get("permission")), payload))
+            return events
+
+        if event_type == "error":
+            events.append(self.emit("error", "Error", _stringify(inner.get("error") or inner), payload))
+            return events
+
+        events.append(self.emit("event", str(event_type), _stringify(inner), payload))
+        return events
+
+
+@dataclass(slots=True)
+class GooseTraceParser(BaseTraceParser):
+    """Parser for the Goose CLI's ``--output-format stream-json`` NDJSON stream."""
+
+    def supports_raw_stdout_fallback(self) -> bool:
+        return False
+
+    def _extract_text_from_content(self, content: Any) -> str:
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        parts.append(text)
+            return "".join(parts)
+        if isinstance(content, str):
+            return content
+        return ""
+
+    def feed(self, line: str) -> list[NormalizedTraceEvent]:
+        payload = _json(line)
+        if payload is None:
+            text = line.rstrip()
+            self.remember(text)
+            return [self.emit("stdout", "stdout", text, line)] if text else []
+        if not isinstance(payload, dict):
+            payload = {}
+
+        event_type = payload.get("type") or "goose"
+        events: list[NormalizedTraceEvent] = []
+        if event_type == "message":
+            message = payload.get("message") or {}
+            text = self._extract_text_from_content(message.get("content"))
+            if text:
+                self.remember(text)
+            events.append(self.emit("assistant_message", "Assistant message", text, payload))
+        elif event_type == "complete":
+            events.append(self.emit("event", "Complete", None, payload))
+        elif event_type == "error":
+            events.append(self.emit("error", "Error", _stringify(payload.get("error") or payload), payload))
+        else:
+            events.append(self.emit("event", str(event_type), _stringify(payload), payload))
+        return events
+
+
+@dataclass(slots=True)
 class GenericTraceParser(BaseTraceParser):
     def feed(self, line: str) -> list[NormalizedTraceEvent]:
         text = line.rstrip()
@@ -361,4 +505,8 @@ def create_trace_parser(agent: AgentKind, node_id: str) -> BaseTraceParser:
             return KimiTraceParser(node_id=node_id, agent=agent)
         case AgentKind.PI:
             return PiTraceParser(node_id=node_id, agent=agent)
+        case AgentKind.OPENCODE:
+            return OpenCodeTraceParser(node_id=node_id, agent=agent)
+        case AgentKind.GOOSE:
+            return GooseTraceParser(node_id=node_id, agent=agent)
     return GenericTraceParser(node_id=node_id, agent=agent)

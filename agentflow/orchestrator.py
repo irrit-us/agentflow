@@ -98,6 +98,7 @@ class _PeriodicNodeRuntimeState:
     next_tick_at: float | None = None
     last_tick_started_at: str | None = None
     last_tick_started_mono: float | None = None
+    last_tick_applied_actions: bool = False
 
 
 @dataclass(slots=True)
@@ -1068,6 +1069,7 @@ class Orchestrator:
         *,
         periodic_tick_number: int | None = None,
         periodic_tick_started_at: str | None = None,
+        preserve_prior_action_output: bool = False,
     ) -> _NodeExecutionOutcome:
         """Execute one node from prompt preparation through final persisted result.
 
@@ -1260,14 +1262,18 @@ class Orchestrator:
                 result.final_response = parser.finalize()
                 if not result.final_response and parser.supports_raw_stdout_fallback():
                     result.final_response = "\n".join(attempt_stdout_lines).strip()
-                result.output = result.final_response if execution_node.capture.value == "final" else "\n".join(attempt_stdout_lines)
+                attempt_output = result.final_response if execution_node.capture.value == "final" else "\n".join(attempt_stdout_lines)
+                # A later no-action tick must not clobber the node-level
+                # output of a previous tick that applied control actions.
+                if not (periodic_tick_number is not None and preserve_prior_action_output):
+                    result.output = attempt_output
                 success_ok, success_details = evaluate_success(execution_node, result, paths.host_workdir)
                 result.success = success_ok
                 result.success_details = success_details
                 attempt.finished_at = utcnow_iso()
                 attempt.exit_code = raw.exit_code
                 attempt.final_response = result.final_response
-                attempt.output = result.output
+                attempt.output = attempt_output
                 attempt.success = success_ok
                 attempt.success_details = success_details
 
@@ -1292,8 +1298,12 @@ class Orchestrator:
                         if execution_node.schedule and execution_node.schedule.actuation == PeriodicActuationMode.OUTPUT_JSON:
                             periodic_actions, periodic_action_parse_error = self._parse_periodic_actions(result.final_response)
                             if periodic_actions is not None and periodic_actions.analysis is not None:
-                                result.output = periodic_actions.analysis
-                                attempt.output = result.output
+                                # A later no-action tick must not clobber the
+                                # analysis of a previous tick that applied
+                                # cancel/rerun control actions.
+                                if periodic_actions.actions or not preserve_prior_action_output:
+                                    result.output = periodic_actions.analysis
+                                    attempt.output = result.output
                         await self._publish(
                             run_id,
                             "node_tick_completed",
@@ -1492,7 +1502,7 @@ class Orchestrator:
         }
         loop = asyncio.get_running_loop()
         periodic_state = {
-            node_id: _PeriodicNodeRuntimeState()
+            node_id: _PeriodicNodeRuntimeState(next_tick_at=loop.time() + node.schedule.every_seconds)
             for node_id, node in node_map.items()
             if node.schedule is not None
         }
@@ -1526,6 +1536,7 @@ class Orchestrator:
                         node_id,
                         periodic_tick_number=state.tick_count,
                         periodic_tick_started_at=tick_started_at,
+                        preserve_prior_action_output=state.last_tick_applied_actions,
                     )
                 finally:
                     if agent_semaphore is not None:
@@ -1618,6 +1629,8 @@ class Orchestrator:
                     node.schedule.until_fanout_settles_from,
                 ):
                     continue
+                if periodic_state[node_id].tick_count > 0:
+                    continue
                 remaining.remove(node_id)
                 await self._finalize_periodic_node(run_id, node_id, reason="watched_group_settled")
 
@@ -1658,6 +1671,8 @@ class Orchestrator:
                     self._node_cancel_flags.setdefault(run_id, set()).discard(node_id)
 
                     if node.schedule is not None:
+                        if outcome.periodic_actions is not None:
+                            periodic_state[node_id].last_tick_applied_actions = bool(outcome.periodic_actions.actions)
                         if outcome.periodic_actions is not None:
                             await self.store.write_artifact_json(
                                 run_id,

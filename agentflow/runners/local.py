@@ -316,7 +316,9 @@ class LocalRunner(Runner):
                 if should_cancel():
                     cancelled = True
                     break
-                check_timeout = min(remaining or 1.0, 1.0)
+                # Poll cancellation and timeout at 0.1s granularity while still
+                # waking immediately when the process exits or a stream EOFs.
+                check_timeout = min(remaining or 0.1, 0.1)
                 done, _ = await asyncio.wait(
                     {stdout_task, stderr_task, wait_task},
                     timeout=check_timeout,

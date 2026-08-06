@@ -3,7 +3,9 @@ from __future__ import annotations
 from agentflow.agents.base import AgentAdapter
 from agentflow.agents.claude import ClaudeAdapter
 from agentflow.agents.codex import CodexAdapter
+from agentflow.agents.goose import GooseAdapter
 from agentflow.agents.kimi import KimiAdapter
+from agentflow.agents.opencode import OpenCodeAdapter
 from agentflow.agents.pi import PiAdapter
 from agentflow.agents.util import PythonAdapter, ShellAdapter, SyncAdapter
 from agentflow.specs import AgentKind
@@ -16,6 +18,8 @@ class AdapterRegistry:
             AgentKind.CLAUDE: ClaudeAdapter(),
             AgentKind.KIMI: KimiAdapter(),
             AgentKind.PI: PiAdapter(),
+            AgentKind.OPENCODE: OpenCodeAdapter(),
+            AgentKind.GOOSE: GooseAdapter(),
             AgentKind.PYTHON: PythonAdapter(),
             AgentKind.SHELL: ShellAdapter(),
             AgentKind.SYNC: SyncAdapter(),

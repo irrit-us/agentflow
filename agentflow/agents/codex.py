@@ -41,12 +41,6 @@ class CodexAdapter(AgentAdapter):
                 lines.append(f"env_key = {self._format_toml_value(provider.api_key_env)}")
             if provider.wire_api:
                 lines.append(f"wire_api = {self._format_toml_value(provider.wire_api)}")
-        if provider:
-            lines.append("")
-            lines.append("[profiles.agentflow]")
-            if node.model:
-                lines.append(f"model = {self._format_toml_value(node.model)}")
-            lines.append(f"model_provider = {self._format_toml_value(provider.name)}")
         if node.mcps:
             for mcp in node.mcps:
                 lines.append("")
@@ -63,6 +57,20 @@ class CodexAdapter(AgentAdapter):
                         lines.append(f"url = {self._format_toml_value(mcp.url)}")
                     if mcp.headers:
                         lines.append(f"http_headers = {self._format_toml_value(mcp.headers)}")
+        return "\n".join(lines) + "\n"
+
+    def _render_profile_config(self, node: NodeSpec, provider: ProviderConfig | None) -> str:
+        """Render the ``agentflow`` profile into ``agentflow.config.toml``.
+
+        Modern codex loads ``<config-dir>/<profile>.config.toml`` when invoked
+        with ``--profile <profile>``; the legacy ``[profiles.<name>]`` table in
+        ``config.toml`` is rejected by recent builds.
+        """
+        lines: list[str] = []
+        if node.model:
+            lines.append(f"model = {self._format_toml_value(node.model)}")
+        if provider:
+            lines.append(f"model_provider = {self._format_toml_value(provider.name)}")
         return "\n".join(lines) + "\n"
 
     def _resolve_sandbox_mode(self, node: NodeSpec, env: dict[str, str]) -> str:
@@ -143,7 +151,7 @@ class CodexAdapter(AgentAdapter):
         runtime_files: dict[str, str] = {}
         runtime_symlinks: dict[str, str] = {}
         if provider or node.mcps or repo_instructions_ignored:
-            codex_home = str(Path(paths.target_runtime_dir) / "codex_home")
+            codex_home = self.target_path(paths, "codex_home")
             host_config = Path.home() / ".codex" / "config.toml"
             inherit_host_config = (
                 provider is None
@@ -158,6 +166,10 @@ class CodexAdapter(AgentAdapter):
                     provider,
                     sandbox,
                 )
+            if provider:
+                runtime_files[self.relative_runtime_file("codex_home", "agentflow.config.toml")] = (
+                    self._render_profile_config(node, provider)
+                )
             host_auth = Path.home() / ".codex" / "auth.json"
             if host_auth.is_file():
                 runtime_symlinks[self.relative_runtime_file("codex_home", "auth.json")] = str(host_auth)
@@ -165,7 +177,7 @@ class CodexAdapter(AgentAdapter):
             env["HOME"] = codex_home
         cwd = paths.target_workdir
         if repo_instructions_ignored:
-            cwd = str(Path(paths.target_runtime_dir))
+            cwd = self.target_path(paths)
         return PreparedExecution(
             command=command,
             env=env,

@@ -5,7 +5,7 @@ Pipeline authoring details, execution targets, and per-agent launch behavior.
 ## Python DAG
 
 ```python
-from agentflow import DAG, claude, codex, kimi
+from agentflow import DAG, claude, codex, goose, kimi, opencode, pi
 
 with DAG("demo", working_dir=".", concurrency=3) as dag:
     plan = codex(task_id="plan", prompt="Inspect the repo and plan the work.")
@@ -31,7 +31,7 @@ spec = dag.to_spec()
 ```
 
 Use `fanout(node, source)` to fan a node into parallel copies and `merge(node, source, by=...|size=...)` to reduce them.
-`DAG(...)` also accepts `fail_fast`, `node_defaults`, `agent_defaults`, and `local_target_defaults`.
+`DAG(...)` also accepts `fail_fast`, `node_defaults`, `agent_defaults`, `local_target_defaults`, and `container_target_defaults`.
 Use `dag.to_json()` to serialize a compact runnable pipeline, `dag.to_payload()` for the raw object structure, and `dag.to_spec()` for the fully expanded in-memory pipeline object.
 
 See `examples/airflow_like.py` for the small static DAG. `examples/airflow_like_fuzz_batched.py` and `examples/airflow_like_fuzz_grouped.py` are advanced fanout examples.
@@ -40,7 +40,7 @@ See `examples/airflow_like.py` for the small static DAG. `examples/airflow_like_
 
 Each node supports:
 
-- `agent`: `codex`, `claude`, or `kimi`
+- `agent`: `codex`, `claude`, `kimi`, `pi`, `opencode`, `goose`, `python`, `shell`, or `sync`
 - `fanout`: `count`, `values`, `matrix`, `group_by`, or `batches`, plus optional `as`, `derive`, and matrix-only `include` / `exclude`
 - `schedule`: optional periodic execution for local nodes with `every_seconds`, `until_fanout_settles_from`, and optional `actuation`
 - `model`: any model string understood by the backend
@@ -62,8 +62,8 @@ Top-level pipeline controls include:
 - `concurrency`: max parallel nodes within a run
 - `fail_fast`: skip downstream work after the first failed node
 - `node_defaults`: shared node fields merged into every node before validation
-- `agent_defaults`: agent-specific shared node fields keyed by `codex`, `claude`, or `kimi`
-- `optimizer`: optional optimizer backend, one of `codex`, `claude`, or `kimi`
+- `agent_defaults`: agent-specific shared node fields keyed by `codex`, `claude`, `kimi`, `pi`, `opencode`, or `goose`
+- `optimizer`: optional optimizer backend, one of `codex`, `claude`, `kimi`, or `pi`
 - `n_run`: optional integer; when `> 1`, runs optimization rounds before execution
 
 `node_defaults` is the pipeline-wide baseline. `agent_defaults` is the agent-specific override layer. Explicit node values always win.
@@ -240,6 +240,8 @@ Built-in provider shorthands:
 - `codex`: `openai`
 - `claude`: `anthropic`, `kimi`
 - `kimi`: `kimi`, `moonshot`, `moonshot-ai`
+- `opencode`: `openai`, `anthropic`
+- `goose`: `openai`, `anthropic`
 
 `provider: kimi` is intentionally rejected on `codex` nodes. Codex requires an OpenAI Responses API backend, and Kimi's public endpoints do not expose `/responses`.
 
@@ -275,6 +277,41 @@ If one local node should not inherit the shared bootstrap, set `target={"bootstr
 
 Wraps the command in `docker run`, mounts the working directory, runtime directory, and the AgentFlow app, then streams stdout and stderr back into the run trace.
 
+Point a node at an image with `target={"kind": "container", "image": "..."}`. The `dockers/` directory ships ready-made images for every supported agent tool:
+
+```python
+codex(
+    task_id="plan",
+    prompt="Inspect the repo and plan the work.",
+    target={"kind": "container", "image": "agentflow-codex:bookworm-slim"},
+)
+```
+
+Build them with:
+
+```bash
+docker build -f dockers/base.Dockerfile -t agentflow-base:bookworm-slim dockers
+docker build -f dockers/codex.Dockerfile -t agentflow-codex:bookworm-slim dockers
+docker build -f dockers/claude.Dockerfile -t agentflow-claude:bookworm-slim dockers
+docker build -f dockers/pi.Dockerfile -t agentflow-pi:bookworm-slim dockers
+docker build -f dockers/kimi.Dockerfile -t agentflow-kimi:bookworm-slim dockers
+docker build -f dockers/opencode.Dockerfile -t agentflow-opencode:bookworm-slim dockers
+docker build -f dockers/goose.Dockerfile -t agentflow-goose:bookworm-slim dockers
+```
+
+`agentflow-python`, `agentflow-shell`, and `agentflow-sync` are thin images on top of the base for the utility agents (`python3 -c`, `bash -c`, and rsync/tar/ssh sync respectively).
+
+When most nodes share the same container image, set it once at the graph level with `container_target_defaults`. Target-less nodes inherit the container defaults; nodes with an explicit `container` target merge the defaults underneath their own overrides; non-container targets are untouched. `container_target_defaults` takes precedence over `local_target_defaults` for nodes without a target.
+
+```python
+DAG(
+    "demo",
+    container_target_defaults={"image": "agentflow-codex:bookworm-slim"},
+)
+```
+
+Per-node container fields include `image`, `engine` (default `docker`), `workdir_mount`, `runtime_mount`, `app_mount`, `extra_args`, and `entrypoint`.
+
 ## Agent notes
 
 ### Codex
@@ -296,3 +333,17 @@ Wraps the command in `docker run`, mounts the working directory, runtime directo
 - Emits a Kimi-style JSON-RPC event stream
 - Calls Moonshot's OpenAI-compatible chat completions API
 - Provides a small built-in tool layer for read, search, write, and shell actions
+
+### OpenCode
+
+- Uses `opencode run --format json --auto` and consumes the NDJSON event stream
+- Materializes custom providers into a per-node `opencode.json` and points at it with `OPENCODE_CONFIG`, because the CLI ignores `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` for its built-in providers. The provider uses the OpenAI-compatible SDK by default, or the Anthropic SDK when the provider name starts with `anthropic` (or the model is prefixed `anthropic/`), and the API key is referenced as `{env:<KEY>}`
+- Namespaces models on a custom provider as `<provider>/<model>` (e.g. `deepseek/deepseek-chat`)
+- Writes MCP servers into the same `opencode.json` and surfaces the provider key as `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` as a fallback
+
+### Goose
+
+- Uses `goose run --no-session --output-format stream-json` and consumes the NDJSON event stream
+- Passes `--provider` and `--model`; the `--provider` flag is skipped when the model string already carries a provider prefix
+- Forwards the provider's `api_key_env` by name and defaults `GOOSE_MODE=auto`, `GOOSE_DISABLE_KEYRING=1`, and `GOOSE_TELEMETRY_OFF=1`
+- Materializes MCP servers into an isolated `HOME` so Goose loads them from `~/.config/goose/config.yaml`

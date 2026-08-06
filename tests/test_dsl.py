@@ -10,9 +10,12 @@ from agentflow import (
     claude,
     codex,
     fanout,
+    goose,
     kimi,
     merge,
+    opencode,
     pi,
+    shell,
 )
 from agentflow.loader import load_pipeline_from_text
 
@@ -223,6 +226,36 @@ def test_airflow_like_dag_applies_local_target_defaults():
     assert spec.nodes[0].target.shell_init == ["command -v kimi >/dev/null 2>&1", "kimi"]
     assert spec.nodes[1].target.shell == "bash"
     assert spec.nodes[1].target.cwd == "review-work"
+
+
+def test_airflow_like_dag_applies_container_target_defaults():
+    with Graph(
+        "container-defaults",
+        container_target_defaults={"image": "agentflow-codex:bookworm-slim"},
+    ) as dag:
+        codex(task_id="plan", prompt="plan")
+        claude(
+            task_id="review",
+            prompt="review",
+            target={
+                "kind": "container",
+                "image": "agentflow-claude:bookworm-slim",
+                "extra_args": ["--network", "host"],
+            },
+        )
+        shell(task_id="check", script="ls", target={"kind": "local", "cwd": "work"})
+
+    spec = dag.to_spec()
+
+    assert spec.container_target_defaults is not None
+    assert spec.container_target_defaults.image == "agentflow-codex:bookworm-slim"
+    assert spec.nodes[0].target.kind == "container"
+    assert spec.nodes[0].target.image == "agentflow-codex:bookworm-slim"
+    assert spec.nodes[1].target.kind == "container"
+    assert spec.nodes[1].target.image == "agentflow-claude:bookworm-slim"
+    assert spec.nodes[1].target.extra_args == ["--network", "host"]
+    assert spec.nodes[2].target.kind == "local"
+    assert spec.nodes[2].target.cwd == "work"
 
 
 def test_airflow_like_dag_supports_pipeline_defaults_and_count_fanout():
@@ -511,3 +544,45 @@ def test_pi_factory_produces_pi_agent_node():
     rendered = g.to_json()
     loaded = load_pipeline_from_text(rendered, base_dir=Path(__file__).resolve().parents[1])
     assert loaded.nodes[0].agent == "pi"
+
+
+def test_opencode_factory_produces_opencode_agent_node():
+    with Graph("opencode-smoke") as g:
+        node = opencode(
+            task_id="scan",
+            prompt="Scan repo for TODOs",
+            model="deepseek-chat",
+            tools="read_only",
+        )
+
+    payload = g.to_payload()
+    assert len(payload["nodes"]) == 1
+    spec = payload["nodes"][0]
+    assert spec["agent"] == "opencode"
+    assert spec["id"] == "scan"
+    assert spec["model"] == "deepseek-chat"
+    assert spec["tools"] == "read_only"
+
+    rendered = g.to_json()
+    loaded = load_pipeline_from_text(rendered, base_dir=Path(__file__).resolve().parents[1])
+    assert loaded.nodes[0].agent == "opencode"
+
+
+def test_goose_factory_produces_goose_agent_node():
+    with Graph("goose-smoke") as g:
+        node = goose(
+            task_id="review",
+            prompt="Review the repo",
+            model="deepseek-chat",
+        )
+
+    payload = g.to_payload()
+    assert len(payload["nodes"]) == 1
+    spec = payload["nodes"][0]
+    assert spec["agent"] == "goose"
+    assert spec["id"] == "review"
+    assert spec["model"] == "deepseek-chat"
+
+    rendered = g.to_json()
+    loaded = load_pipeline_from_text(rendered, base_dir=Path(__file__).resolve().parents[1])
+    assert loaded.nodes[0].agent == "goose"

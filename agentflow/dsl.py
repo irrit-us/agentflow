@@ -10,7 +10,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
-from agentflow.specs import AgentKind, LocalTarget, NodeSpec, PipelineSpec, normalize_agent_name
+from agentflow.specs import AgentKind, ContainerTarget, LocalTarget, NodeSpec, PipelineSpec, normalize_agent_name
 
 
 _CURRENT_GRAPH: ContextVar["Graph | None"] = ContextVar("_CURRENT_GRAPH", default=None)
@@ -180,6 +180,7 @@ class Graph:
         node_defaults: dict[str, Any] | None = None,
         agent_defaults: dict[str | AgentKind, dict[str, Any]] | None = None,
         local_target_defaults: dict[str, Any] | LocalTarget | None = None,
+        container_target_defaults: dict[str, Any] | ContainerTarget | None = None,
         inference: InferenceSetup | dict[str, Any] | None = None,
     ) -> None:
         self.name = name
@@ -199,6 +200,7 @@ class Graph:
         self.node_defaults = node_defaults
         self.agent_defaults = agent_defaults
         self.local_target_defaults = local_target_defaults
+        self.container_target_defaults = container_target_defaults
         self.inference = inference
         self._nodes: dict[str, NodeBuilder] = {}
         self._token: Token[Graph | None] | None = None
@@ -253,6 +255,8 @@ class Graph:
             payload["agent_defaults"] = _normalize_agent_defaults(self.agent_defaults)
         if self.local_target_defaults is not None:
             payload["local_target_defaults"] = self.local_target_defaults
+        if self.container_target_defaults is not None:
+            payload["container_target_defaults"] = _normalize_container_target(self.container_target_defaults)
         if self.inference is not None:
             payload["inference"] = _normalize_inference_setup(self.inference)
         payload["nodes"] = [node.to_payload() for node in self._nodes.values()]
@@ -271,6 +275,16 @@ def _normalize_local_target(value: Any) -> Any:
     if "kind" in value:
         return deepcopy(value)
     return {"kind": "local", **deepcopy(value)}
+
+
+def _normalize_container_target(value: Any) -> Any:
+    if isinstance(value, ContainerTarget):
+        return value.model_dump(mode="python")
+    if not isinstance(value, dict):
+        return deepcopy(value)
+    if "kind" in value:
+        return deepcopy(value)
+    return {"kind": "container", **deepcopy(value)}
 
 
 def _normalize_node_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -486,6 +500,26 @@ def pi(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     and AgentFlow will materialize a scoped ``models.json`` for the run.
     """
     return _node(AgentKind.PI, task_id=task_id, prompt=prompt, **kwargs)
+
+
+def opencode(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
+    """Run the OpenCode CLI (https://opencode.ai).
+
+    Streams ``opencode run --format json --auto`` events into the trace. MCP
+    servers declared on the node are materialized into a per-node
+    ``opencode.json`` and passed via ``OPENCODE_CONFIG``.
+    """
+    return _node(AgentKind.OPENCODE, task_id=task_id, prompt=prompt, **kwargs)
+
+
+def goose(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
+    """Run the Goose CLI (https://block.github.io/goose).
+
+    Streams ``goose run --no-session --output-format stream-json`` events into
+    the trace. MCP servers declared on the node are materialized into an
+    isolated Goose config under the runtime directory.
+    """
+    return _node(AgentKind.GOOSE, task_id=task_id, prompt=prompt, **kwargs)
 
 
 def python_node(*, task_id: str, code: str, **kwargs: Any) -> NodeBuilder:

@@ -1023,11 +1023,15 @@ def build_pipeline_local_kimi_readiness_checks(pipeline: object) -> list[DoctorC
         provider = resolve_provider(_object_value(node, "provider"), AgentKind.KIMI)
         api_key_env = str(_object_value(provider, "api_key_env") or "KIMI_API_KEY")
         launch_env = merge_env_layers(_object_value(provider, "env"), _object_value(node, "env"))
-        if not str(launch_env.get(api_key_env) or os.getenv(api_key_env) or "").strip():
-            continue
+        has_api_key = bool(str(launch_env.get(api_key_env) or os.getenv(api_key_env) or "").strip())
 
         ready, probe_command, execution_note, failure_detail = _can_launch_local_kimi(node, pipeline)
         if ready:
+            continue
+        if not has_api_key and failure_detail is None:
+            # Missing provider credentials are reported by the dedicated
+            # provider_credentials check; only surface probe failures that are
+            # not explained by the missing key (for example a hung probe).
             continue
 
         node_id = str(_object_value(node, "id", "kimi"))

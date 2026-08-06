@@ -826,6 +826,55 @@ def test_container_runner_plan_execution_shows_host_and_container_context(tmp_pa
     }
 
 
+def test_container_runner_adds_i_flag_when_stdin_is_present(tmp_path: Path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan-container-stdin",
+            "agent": "pi",
+            "prompt": "hi",
+            "target": {"kind": "container", "image": "ghcr.io/example/agentflow:test"},
+        }
+    )
+    prepared = PreparedExecution(
+        command=["pi", "--print"],
+        env={},
+        cwd="/workspace/task",
+        trace_kind="pi",
+        runtime_files={},
+        stdin="hi",
+    )
+
+    plan = ContainerRunner().plan_execution(node, prepared, _paths(tmp_path))
+
+    assert plan.kind == "container"
+    assert plan.command[:5] == ["docker", "run", "--rm", "-i", "-v"]
+    assert plan.stdin == "hi"
+
+
+def test_container_runner_omits_i_flag_without_stdin(tmp_path: Path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "plan-container-no-stdin",
+            "agent": "codex",
+            "prompt": "hi",
+            "target": {"kind": "container", "image": "ghcr.io/example/agentflow:test"},
+        }
+    )
+    prepared = PreparedExecution(
+        command=["codex", "exec", "ping"],
+        env={},
+        cwd="/workspace/task",
+        trace_kind="codex",
+        runtime_files={},
+        stdin=None,
+    )
+
+    plan = ContainerRunner().plan_execution(node, prepared, _paths(tmp_path))
+
+    assert "-i" not in plan.command
+    assert plan.stdin is None
+
+
 @pytest.mark.asyncio
 async def test_container_runner_execute_inherits_local_stdin_handling(tmp_path: Path, monkeypatch):
     node = NodeSpec.model_validate(

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 
 from agentflow.agents.base import AgentAdapter
 from agentflow.env import merge_env_layers
@@ -75,7 +74,7 @@ class ClaudeAdapter(AgentAdapter):
                 mcp_payload["mcpServers"][mcp.name] = inner
             relative_path = self.relative_runtime_file("claude-mcp.json")
             runtime_files[relative_path] = json.dumps(mcp_payload, ensure_ascii=False, indent=2)
-            command.extend(["--mcp-config", str(Path(paths.target_runtime_dir) / relative_path)])
+            command.extend(["--mcp-config", self.target_path(paths, relative_path)])
         env = merge_env_layers(getattr(provider, "env", None), node.env)
         if provider:
             if provider.base_url:
@@ -92,7 +91,7 @@ class ClaudeAdapter(AgentAdapter):
         command.extend(node.extra_args)
         cwd = paths.target_workdir
         if repo_instructions_ignored:
-            cwd = str(Path(paths.target_runtime_dir))
+            cwd = self.target_path(paths)
         return PreparedExecution(
             command=command,
             env=env,

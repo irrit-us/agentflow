@@ -362,6 +362,70 @@ def test_pipeline_validation_applies_local_target_defaults_to_local_nodes():
     assert pipeline.nodes[2].target.kind == "container"
 
 
+def test_pipeline_validation_applies_container_target_defaults_to_container_nodes():
+    pipeline = PipelineSpec.model_validate(
+        {
+            "name": "container-target-defaults",
+            "working_dir": ".",
+            "container_target_defaults": {"image": "agentflow-codex:bookworm-slim"},
+            "nodes": [
+                {"id": "plan", "agent": "codex", "prompt": "plan"},
+                {
+                    "id": "review",
+                    "agent": "claude",
+                    "prompt": "review",
+                    "target": {
+                        "kind": "container",
+                        "image": "agentflow-claude:bookworm-slim",
+                        "extra_args": ["--network", "host"],
+                    },
+                },
+                {
+                    "id": "local-check",
+                    "agent": "codex",
+                    "prompt": "check",
+                    "target": {"kind": "local", "cwd": "work"},
+                },
+            ],
+        }
+    )
+
+    assert pipeline.container_target_defaults is not None
+    assert pipeline.container_target_defaults.image == "agentflow-codex:bookworm-slim"
+    assert pipeline.nodes[0].target.kind == "container"
+    assert pipeline.nodes[0].target.image == "agentflow-codex:bookworm-slim"
+    assert pipeline.nodes[1].target.kind == "container"
+    assert pipeline.nodes[1].target.image == "agentflow-claude:bookworm-slim"
+    assert pipeline.nodes[1].target.extra_args == ["--network", "host"]
+    assert pipeline.nodes[2].target.kind == "local"
+    assert pipeline.nodes[2].target.cwd == "work"
+
+
+def test_pipeline_validation_container_defaults_win_for_targetless_nodes():
+    pipeline = PipelineSpec.model_validate(
+        {
+            "name": "container-defaults-precedence",
+            "working_dir": ".",
+            "local_target_defaults": {"shell": "bash"},
+            "container_target_defaults": {"image": "agentflow-kimi:bookworm-slim"},
+            "nodes": [
+                {"id": "plan", "agent": "codex", "prompt": "plan"},
+                {
+                    "id": "local",
+                    "agent": "codex",
+                    "prompt": "local",
+                    "target": {"kind": "local", "shell": "zsh"},
+                },
+            ],
+        }
+    )
+
+    assert pipeline.nodes[0].target.kind == "container"
+    assert pipeline.nodes[0].target.image == "agentflow-kimi:bookworm-slim"
+    assert pipeline.nodes[1].target.kind == "local"
+    assert pipeline.nodes[1].target.shell == "zsh"
+
+
 def test_pipeline_validation_expands_kimi_bootstrap_shorthand():
     pipeline = PipelineSpec.model_validate(
         {

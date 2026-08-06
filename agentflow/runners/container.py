@@ -15,19 +15,21 @@ class ContainerRunner(LocalRunner):
             raise TypeError("ContainerRunner requires a ContainerTarget")
 
         app_mount = target.app_mount
-        command = [
-            target.engine,
-            "run",
-            "--rm",
-            "-v",
-            f"{paths.host_workdir}:{target.workdir_mount}",
-            "-v",
-            f"{paths.host_runtime_dir}:{target.runtime_mount}",
-            "-v",
-            f"{paths.app_root}:{app_mount}",
-            "-w",
-            prepared.cwd,
-        ]
+        command = [target.engine, "run", "--rm"]
+        if prepared.stdin is not None:
+            command.append("-i")
+        command.extend(
+            [
+                "-v",
+                f"{paths.host_workdir}:{target.workdir_mount}",
+                "-v",
+                f"{paths.host_runtime_dir}:{target.runtime_mount}",
+                "-v",
+                f"{paths.app_root}:{app_mount}",
+                "-w",
+                prepared.cwd,
+            ]
+        )
         for key, value in prepared.env.items():
             command.extend(["-e", f"{key}={value}"])
         if app_mount:
