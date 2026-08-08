@@ -30,6 +30,8 @@ from agentflow.local_shell import (
     target_uses_login_bash,
 )
 
+pytestmark = pytest.mark.usefixtures("hermetic_kimi_env")
+
 
 @pytest.mark.parametrize(
     "command",

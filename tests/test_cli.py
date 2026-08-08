@@ -2259,6 +2259,7 @@ def test_inspect_command_ignores_kimi_probe_commands_in_auto_preflight(tmp_path)
     }
 
 
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_inspect_command_warns_when_kimi_shell_init_is_not_interactive(tmp_path):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2360,6 +2361,7 @@ def test_inspect_command_accepts_bash_env_wrapper_that_sources_helper_file(tmp_p
     assert payload["nodes"][0].get("warnings") is None
 
 
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_inspect_command_json_summary_includes_kimi_shell_init_warning(tmp_path):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2376,6 +2378,7 @@ def test_inspect_command_json_summary_includes_kimi_shell_init_warning(tmp_path)
     ]
 
 
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_inspect_command_warns_when_explicit_kimi_shell_wrapper_is_not_interactive(tmp_path):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2390,6 +2393,7 @@ def test_inspect_command_warns_when_explicit_kimi_shell_wrapper_is_not_interacti
     assert "Add `-i`, set `target.shell_interactive: true`, or use `bash -lic`." in result.stdout
 
 
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_inspect_command_detects_eval_style_kimi_wrapper_in_auto_preflight(tmp_path):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2412,6 +2416,7 @@ def test_inspect_command_detects_eval_style_kimi_wrapper_in_auto_preflight(tmp_p
     ]
 
 
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_inspect_command_detects_backtick_eval_kimi_wrapper_in_auto_preflight(tmp_path):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2434,6 +2439,7 @@ def test_inspect_command_detects_backtick_eval_kimi_wrapper_in_auto_preflight(tm
     ]
 
 
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_inspect_command_detects_export_kimi_wrapper_in_auto_preflight(tmp_path):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2456,6 +2462,7 @@ def test_inspect_command_detects_export_kimi_wrapper_in_auto_preflight(tmp_path)
     ]
 
 
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_inspect_command_detects_env_var_eval_kimi_wrapper_in_auto_preflight(tmp_path):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2587,6 +2594,7 @@ def test_inspect_command_surfaces_default_kimi_provider_in_json_summary(tmp_path
         ["smoke"],
     ],
 )
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_run_and_smoke_preflight_warn_when_kimi_shell_init_is_not_interactive(tmp_path, monkeypatch, command):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2673,6 +2681,12 @@ def test_run_and_smoke_preflight_accepts_kimi_shell_init_when_login_shell_alread
     monkeypatch,
     command,
 ):
+    host_home = tmp_path / "host-home"
+    (host_home / "bin").mkdir(parents=True)
+    (host_home / "bin" / "kimi").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (host_home / "bin" / "kimi").chmod(0o755)
+    (host_home / ".bash_profile").write_text('export PATH="$HOME/bin:$PATH"\n', encoding="utf-8")
+    monkeypatch.setenv("HOME", str(host_home))
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
         json.dumps({"name": 'codex-kimi-preflight-warning', "working_dir": '.', "nodes": [{"id": 'codex_plan', "agent": 'codex', "prompt": 'hi', "target": {"kind": 'local', "shell": 'bash', "shell_login": True, "shell_init": 'kimi'}}]}),
@@ -2768,6 +2782,7 @@ def test_run_and_smoke_preflight_skips_codex_auth_probe_when_kimi_shell_init_use
         ["smoke"],
     ],
 )
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_run_and_smoke_preflight_warn_when_explicit_kimi_shell_wrapper_is_not_interactive(tmp_path, monkeypatch, command):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2809,6 +2824,7 @@ def test_run_and_smoke_preflight_warn_when_explicit_kimi_shell_wrapper_is_not_in
         ["smoke"],
     ],
 )
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_run_and_smoke_preflight_warn_when_eval_style_kimi_wrapper_is_not_interactive(tmp_path, monkeypatch, command):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -2850,6 +2866,7 @@ def test_run_and_smoke_preflight_warn_when_eval_style_kimi_wrapper_is_not_intera
         ["smoke"],
     ],
 )
+@pytest.mark.usefixtures("hermetic_kimi_env")
 def test_run_and_smoke_preflight_warn_when_backtick_eval_kimi_wrapper_is_not_interactive(tmp_path, monkeypatch, command):
     pipeline_path = tmp_path / "pipeline.json"
     pipeline_path.write_text(
@@ -4198,6 +4215,8 @@ def test_run_skips_preflight_for_custom_pipeline_in_auto_mode(monkeypatch):
 def test_run_auto_runs_preflight_for_custom_pipeline_with_kimi_shell_init(monkeypatch):
     captured: dict[str, object] = {}
     doctor_calls = 0
+    mock_bin = Path(__file__).resolve().parent / "e2e" / "bin"
+    monkeypatch.setenv("PATH", f"{mock_bin}{os.pathsep}{os.environ.get('PATH', '')}")
 
     class FakeOrchestrator:
         async def submit(self, pipeline: object):
@@ -9403,6 +9422,8 @@ def test_run_command_executes_local_kimi_node_when_pipeline_lives_outside_repo(t
         json.dumps({"name": 'kimi-only', "working_dir": '.', "nodes": [{"id": 'review', "agent": 'kimi', "prompt": 'Reply with exactly: kimi ok\n', "timeout_seconds": 30, "success_criteria": [{"kind": 'output_contains', "value": 'kimi ok'}]}]}),
         encoding="utf-8",
     )
+    mock_bin = Path(__file__).resolve().parent / "e2e" / "bin"
+    monkeypatch.setenv("PATH", f"{mock_bin}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setenv("AGENTFLOW_KIMI_MOCK_RESPONSE", "kimi ok")
     monkeypatch.setenv("KIMI_API_KEY", "super-secret")
     monkeypatch.setattr(agentflow.cli, "build_pipeline_local_kimi_readiness_checks", lambda pipeline: [])
