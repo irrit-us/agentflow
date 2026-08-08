@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.context import render_node_prompt
+from agentflow.errors import StderrClassifier, capture_execution_error
 from agentflow.graph_optimizer import (
     GRAPH_OPTIMIZER_MAX_ATTEMPTS,
     GENERATED_PIPELINE_EDITED_FILENAME,
@@ -1181,6 +1182,7 @@ class Orchestrator:
                     await self._mark_node_cancelled(run_id, node_id, "run_cancelled")
                     return _NodeExecutionOutcome(node_id=node_id, periodic_tick_number=periodic_tick_number)
 
+                stderr_classifier = StderrClassifier()
                 attempt = NodeAttempt(number=attempt_number, status=NodeStatus.RUNNING, started_at=utcnow_iso())
                 attempt_stdout_lines: list[str] = []
                 attempt_stderr_lines: list[str] = []
@@ -1245,7 +1247,8 @@ class Orchestrator:
                     else:
                         attempt_stderr_lines.append(line)
                         await self.store.append_artifact_text(run_id, node_id, "stderr.log", line + "\n")
-                        event = parser.emit("stderr", "stderr", line, line, source="stderr")
+                        kind, title = stderr_classifier.classify(line)
+                        event = parser.emit(kind, title, line, line, source="stderr")
                         result.trace_events.append(event)
                         await self._publish_trace(run_id, node_id, event)
 
@@ -1259,6 +1262,14 @@ class Orchestrator:
                 result.exit_code = raw.exit_code
                 result.stdout_lines = attempt_stdout_lines
                 result.stderr_lines = attempt_stderr_lines
+                captured_error = capture_execution_error(
+                    stderr_lines=attempt_stderr_lines,
+                    parser_error=getattr(parser, "last_error", None),
+                    exit_code=raw.exit_code,
+                )
+                result.error_kind = captured_error.kind if captured_error else None
+                result.error_message = captured_error.message if captured_error else None
+                result.error_traceback = captured_error.traceback if captured_error else None
                 result.final_response = parser.finalize()
                 if not result.final_response and parser.supports_raw_stdout_fallback():
                     result.final_response = "\n".join(attempt_stdout_lines).strip()
@@ -1276,6 +1287,9 @@ class Orchestrator:
                 attempt.output = attempt_output
                 attempt.success = success_ok
                 attempt.success_details = success_details
+                attempt.error_kind = result.error_kind
+                attempt.error_message = result.error_message
+                attempt.error_traceback = result.error_traceback
 
                 if raw.cancelled or self._should_cancel(run_id):
                     attempt.status = NodeStatus.CANCELLED
@@ -1343,6 +1357,9 @@ class Orchestrator:
                     output=result.output,
                     final_response=result.final_response,
                     success_details=result.success_details,
+                    error_kind=result.error_kind,
+                    error_message=result.error_message,
+                    error_traceback=result.error_traceback,
                 )
                 if attempt_number <= node.retries:
                     if getattr(node, "retry_backoff_strategy", "exponential") == "exponential":

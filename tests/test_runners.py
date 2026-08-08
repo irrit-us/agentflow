@@ -772,7 +772,7 @@ def test_local_runner_plan_execution_kimi_cli(tmp_path: Path):
         }
     )
     prepared = PreparedExecution(
-        command=["kimi", "--print", "--output-format", "stream-json", "--yolo", "-p", "hi"],
+        command=["kimi", "--output-format", "stream-json", "-p", "hi"],
         env={},
         cwd=str(tmp_path),
         trace_kind="kimi",
@@ -780,7 +780,7 @@ def test_local_runner_plan_execution_kimi_cli(tmp_path: Path):
 
     plan = LocalRunner().plan_execution(node, prepared, _paths(tmp_path))
 
-    assert plan.command == ["kimi", "--print", "--output-format", "stream-json", "--yolo", "-p", "hi"]
+    assert plan.command == ["kimi", "--output-format", "stream-json", "-p", "hi"]
     assert plan.env == {}
 
 

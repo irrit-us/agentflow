@@ -1886,6 +1886,9 @@ class NodeAttempt(BaseModel):
     output: str | None = None
     success: bool | None = None
     success_details: list[str] = Field(default_factory=list)
+    error_kind: str | None = None
+    error_message: str | None = None
+    error_traceback: str | None = None
 
 
 class NodeResult(BaseModel):
@@ -1903,6 +1906,9 @@ class NodeResult(BaseModel):
     trace_events: list[NormalizedTraceEvent] = Field(default_factory=list)
     success: bool | None = None
     success_details: list[str] = Field(default_factory=list)
+    error_kind: str | None = None
+    error_message: str | None = None
+    error_traceback: str | None = None
     current_attempt: int = 0
     attempts: list[NodeAttempt] = Field(default_factory=list)
     tick_count: int = 0

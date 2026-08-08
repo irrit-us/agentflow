@@ -314,6 +314,11 @@ Per-node container fields include `image`, `engine` (default `docker`), `workdir
 
 ## Agent notes
 
+The adapters are pinned against real CLI binaries; command shapes below match
+these verified versions: Claude Code 2.1.226, Codex CLI 0.146.1, Kimi 0.34.0,
+pi 0.84.1, OpenCode 1.18.15 (with `OPENCODE_CONFIG`), and Goose 1.45.0. When a
+CLI bumps a flag, update the adapter and its shape tests together.
+
 ### Codex
 
 - Uses `codex exec --json`
@@ -329,10 +334,9 @@ Per-node container fields include `image`, `engine` (default `docker`), `workdir
 
 ### Kimi
 
-- Uses the active Python interpreter via `sys.executable -m agentflow.remote.kimi_bridge`
-- Emits a Kimi-style JSON-RPC event stream
-- Calls Moonshot's OpenAI-compatible chat completions API
-- Provides a small built-in tool layer for read, search, write, and shell actions
+- Uses `kimi --output-format stream-json -p` (0.34.0 dropped `--print`/`--yolo` and removed `--mcp-config-file`)
+- Maps `provider.api_key_env`/`base_url` to `KIMI_API_KEY`/`KIMI_BASE_URL`, and a node `model` to `KIMI_MODEL_NAME` plus `KIMI_MODEL_API_KEY`/`KIMI_MODEL_BASE_URL`
+- Writes MCP servers into `<KIMI_CODE_HOME>/mcp.json` and points `KIMI_CODE_HOME` at the node runtime dir, because kimi loads MCP servers from its user-global home
 
 ### OpenCode
 

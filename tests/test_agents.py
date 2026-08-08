@@ -234,6 +234,32 @@ def test_claude_adapter_uses_tools_flag_for_read_write_access(tmp_path):
     assert "Write" in prepared.command[index + 1].split(",")
 
 
+def test_claude_adapter_uses_current_cli_flags(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "review",
+            "agent": "claude",
+            "prompt": "Review",
+        }
+    )
+
+    prepared = ClaudeAdapter().prepare(node, "Review", _paths(tmp_path))
+
+    # Claude Code 2.x flags: non-interactive print mode with NDJSON events.
+    assert prepared.command[:9] == [
+        "claude",
+        "-p",
+        "Review",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--permission-mode",
+        "bypassPermissions",
+        "--tools",
+    ]
+    assert "--print" not in prepared.command
+
+
 def test_claude_adapter_can_ignore_repo_instructions_with_bare_runtime_cwd(tmp_path):
     node = NodeSpec.model_validate(
         {
@@ -283,10 +309,10 @@ def test_kimi_adapter_uses_kimi_cli_directly(tmp_path, monkeypatch):
     prepared = KimiAdapter().prepare(node, "Review", _paths(tmp_path))
 
     assert prepared.command[0] == "kimi"
-    assert "--print" in prepared.command
+    assert "--print" not in prepared.command
+    assert "--yolo" not in prepared.command
     assert "--output-format" in prepared.command
     assert "stream-json" in prepared.command
-    assert "--yolo" in prepared.command
     assert "-p" in prepared.command
     assert "Review" in prepared.command
 
@@ -493,6 +519,8 @@ def test_kimi_adapter_surfaces_provider_base_url_and_model_name(tmp_path, monkey
     assert prepared.env["KIMI_API_KEY"] == "deepseek-secret"
     assert prepared.env["KIMI_BASE_URL"] == "https://api.deepseek.com/v1"
     assert prepared.env["KIMI_MODEL_NAME"] == "deepseek-chat"
+    assert prepared.env["KIMI_MODEL_API_KEY"] == "deepseek-secret"
+    assert prepared.env["KIMI_MODEL_BASE_URL"] == "https://api.deepseek.com/v1"
 
 
 def test_pi_adapter_uses_pi_cli_directly(tmp_path):

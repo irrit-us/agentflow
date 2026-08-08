@@ -16,10 +16,8 @@ class KimiAdapter(AgentAdapter):
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
         command = [
             executable,
-            "--print",
             "--output-format",
             "stream-json",
-            "--yolo",
             "-p",
             prompt,
         ]
@@ -49,9 +47,12 @@ class KimiAdapter(AgentAdapter):
                         inner["headers"] = mcp.headers
                     inner["transport"] = "streamable_http"
                 mcp_payload["mcpServers"][mcp.name] = inner
-            relative_path = self.relative_runtime_file("kimi-mcp.json")
+            # kimi 0.34.0 removed `--mcp-config-file`; it loads MCP servers from
+            # `<KIMI_CODE_HOME>/mcp.json` (user-global, not trust-gated). Point
+            # `KIMI_CODE_HOME` at the node's runtime dir so each node's MCP
+            # servers stay isolated and real executions can load them.
+            relative_path = self.relative_runtime_file("mcp.json")
             runtime_files[relative_path] = json.dumps(mcp_payload, ensure_ascii=False, indent=2)
-            command.extend(["--mcp-config-file", self.target_path(paths, relative_path)])
         command.extend(node.extra_args)
         env = merge_env_layers(getattr(provider, "env", None), node.env)
         if provider:
@@ -64,8 +65,18 @@ class KimiAdapter(AgentAdapter):
                     env.setdefault("KIMI_API_KEY", api_key)
             if provider.base_url:
                 env.setdefault("KIMI_BASE_URL", provider.base_url)
+        if node.mcps:
+            env.setdefault("KIMI_CODE_HOME", self.target_path(paths))
         if node.model:
             env.setdefault("KIMI_MODEL_NAME", node.model)
+            # kimi 0.34.0 synthesizes an env provider from `KIMI_MODEL_*` when
+            # `KIMI_MODEL_NAME` is set; it requires the API key under
+            # `KIMI_MODEL_API_KEY` and honors `KIMI_MODEL_BASE_URL`.
+            api_key = env.get("KIMI_API_KEY")
+            if api_key is not None:
+                env.setdefault("KIMI_MODEL_API_KEY", api_key)
+            if provider and provider.base_url:
+                env.setdefault("KIMI_MODEL_BASE_URL", provider.base_url)
         cwd = paths.target_workdir
         if repo_instructions_ignored:
             cwd = self.target_path(paths)

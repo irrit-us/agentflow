@@ -13,3 +13,5 @@ dist/
 .worktrees/
 docs/superpowers/
 DEEPSEEK_KEY_FOR_TEST
+.venv-linux/
+.tmp_*
