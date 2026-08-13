@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
@@ -11,6 +12,7 @@ from agentflow.lite.agent import AgentResult
 from agentflow.lite.container import ContainerConfig
 
 _PROMPT_REF = re.compile(r"\{\{\s*nodes\.([A-Za-z0-9_\-]+)\.text\s*\}\}")
+_ITEM_VAR = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 class EdgeSpec(BaseModel):
@@ -18,6 +20,17 @@ class EdgeSpec(BaseModel):
 
     from_: str = Field(alias="from")
     to: str
+
+
+class FanOutSpec(BaseModel):
+    """Expand one node into one runtime task per upstream JSON item."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    from_: str = Field(alias="from")
+    items_path: str | None = None
+    item_var: str = "item"
+    max_items: int | None = Field(default=None, ge=1)
 
 
 class NodeSpec(BaseModel):
@@ -33,6 +46,10 @@ class NodeSpec(BaseModel):
     max_iterations: int | None = None
     max_total_tokens: int | None = None
     container: ContainerConfig | None = None
+    fanout: FanOutSpec | None = None
+    resource: str = Field(default="default", min_length=1)
+    priority: int = 0
+    max_attempts: int = Field(default=1, ge=1)
 
 
 class GraphSpec(BaseModel):
@@ -56,6 +73,11 @@ class GraphSpec(BaseModel):
                 if pair not in seen:
                     seen.add(pair)
                     merged.append(pair)
+            if node.fanout is not None:
+                pair = (node.fanout.from_, node.id)
+                if pair not in seen:
+                    seen.add(pair)
+                    merged.append(pair)
         return merged
 
     def dependencies(self, node_id: str) -> list[str]:
@@ -70,6 +92,13 @@ class GraphSpec(BaseModel):
         unknown = sorted({ep for edge in self.all_edges() for ep in edge} - known)
         if unknown:
             raise ValueError(f"edges reference unknown nodes: {', '.join(unknown)}")
+        invalid_vars = sorted(
+            node.id
+            for node in self.nodes
+            if node.fanout is not None and not _ITEM_VAR.fullmatch(node.fanout.item_var)
+        )
+        if invalid_vars:
+            raise ValueError(f"fanout item_var is invalid for nodes: {', '.join(invalid_vars)}")
         self.topo_order()  # raises on cycles
 
     def topo_order(self) -> list[str]:
@@ -122,3 +151,64 @@ def resolve_prompt(node: NodeSpec, results: dict[str, AgentResult]) -> str:
         return result.text
 
     return _PROMPT_REF.sub(replace, node.prompt)
+
+
+def fanout_items(node: NodeSpec, results: dict[str, AgentResult]) -> list[Any]:
+    """Read and validate the JSON item list declared by ``node.fanout``."""
+
+    spec = node.fanout
+    if spec is None:
+        raise ValueError(f"node '{node.id}' does not declare fanout")
+    result = results.get(spec.from_)
+    if result is None:
+        raise ValueError(
+            f"fanout of node '{node.id}' references node '{spec.from_}' "
+            "which has no completed result"
+        )
+    try:
+        value: Any = json.loads(result.text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"fanout source '{spec.from_}' did not return valid JSON: {exc.msg}"
+        ) from exc
+    if spec.items_path:
+        for part in spec.items_path.split("."):
+            if not isinstance(value, dict) or part not in value:
+                raise ValueError(
+                    f"fanout items_path '{spec.items_path}' is missing in source '{spec.from_}'"
+                )
+            value = value[part]
+    if not isinstance(value, list):
+        raise ValueError(f"fanout source for node '{node.id}' must resolve to a JSON list")
+    if spec.max_items is not None and len(value) > spec.max_items:
+        raise ValueError(
+            f"fanout node '{node.id}' received {len(value)} items, above max_items={spec.max_items}"
+        )
+    return value
+
+
+def render_fanout_prompt(node: NodeSpec, item: Any) -> str:
+    """Render ``{{ item }}`` and dotted item fields for one fan-out child."""
+
+    spec = node.fanout
+    if spec is None:
+        raise ValueError(f"node '{node.id}' does not declare fanout")
+    pattern = re.compile(
+        r"\{\{\s*" + re.escape(spec.item_var) + r"(?:\.([A-Za-z0-9_.\-]+))?\s*\}\}"
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        value = item
+        path = match.group(1)
+        if path:
+            for part in path.split("."):
+                if not isinstance(value, dict) or part not in value:
+                    raise ValueError(
+                        f"fanout item for node '{node.id}' has no field '{path}'"
+                    )
+                value = value[part]
+        if isinstance(value, str):
+            return value
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    return pattern.sub(replace, node.prompt)

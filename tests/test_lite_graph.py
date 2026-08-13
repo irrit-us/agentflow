@@ -4,8 +4,16 @@ import json
 
 import pytest
 
-from agentflow.lite import AgentResult, GraphSpec, Usage, load_graph, resolve_prompt
-from agentflow.lite.graph import EdgeSpec, NodeSpec
+from agentflow.lite import (
+    AgentResult,
+    GraphSpec,
+    Usage,
+    fanout_items,
+    load_graph,
+    render_fanout_prompt,
+    resolve_prompt,
+)
+from agentflow.lite.graph import EdgeSpec, FanOutSpec, NodeSpec
 
 
 def _result(text: str) -> AgentResult:
@@ -204,3 +212,58 @@ def test_node_without_container_defaults_to_none():
     node = NodeSpec(id="a", prompt="x")
 
     assert node.container is None
+
+
+def test_fanout_adds_implicit_dependency_and_extracts_nested_items():
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="plan", prompt="return links"),
+            NodeSpec(
+                id="audit",
+                prompt="audit {{ link.id }}: {{ link }}",
+                fanout=FanOutSpec(from_="plan", items_path="plan.links", item_var="link"),
+            ),
+        ]
+    )
+    graph.validate_graph()
+
+    assert graph.dependencies("audit") == ["plan"]
+    items = fanout_items(
+        graph.nodes[1],
+        {"plan": _result('{"plan":{"links":[{"id":"L-1","kind":"reentry"}]}}')},
+    )
+    assert items == [{"id": "L-1", "kind": "reentry"}]
+    assert render_fanout_prompt(graph.nodes[1], items[0]) == (
+        'audit L-1: {"id":"L-1","kind":"reentry"}'
+    )
+
+
+def test_fanout_rejects_invalid_source_shape_and_limit():
+    node = NodeSpec(
+        id="audit",
+        prompt="{{ item }}",
+        fanout=FanOutSpec(from_="plan", max_items=1),
+    )
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        fanout_items(node, {"plan": _result("not-json")})
+    with pytest.raises(ValueError, match="must resolve to a JSON list"):
+        fanout_items(node, {"plan": _result('{"links": []}')})
+    with pytest.raises(ValueError, match="above max_items=1"):
+        fanout_items(node, {"plan": _result("[1, 2]")})
+
+
+def test_validate_rejects_invalid_fanout_item_variable():
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="plan", prompt="plan"),
+            NodeSpec(
+                id="audit",
+                prompt="audit",
+                fanout=FanOutSpec(from_="plan", item_var="not valid"),
+            ),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="item_var is invalid"):
+        graph.validate_graph()

@@ -7,7 +7,16 @@ from agentflow.lite.container import (
     ExecResult,
     container_shell_tool,
 )
-from agentflow.lite.graph import EdgeSpec, GraphSpec, NodeSpec, load_graph, resolve_prompt
+from agentflow.lite.graph import (
+    EdgeSpec,
+    FanOutSpec,
+    GraphSpec,
+    NodeSpec,
+    fanout_items,
+    load_graph,
+    render_fanout_prompt,
+    resolve_prompt,
+)
 from agentflow.lite.router import ModelProfile, ModelRouter
 from agentflow.lite.runner import (
     GraphRunner,
@@ -31,6 +40,7 @@ __all__ = [
     "DockerExecutor",
     "EdgeSpec",
     "ExecResult",
+    "FanOutSpec",
     "GraphRunner",
     "GraphSpec",
     "LiteAgent",
@@ -52,9 +62,11 @@ __all__ = [
     "container_shell_tool",
     "create_app",
     "ensure_volume",
+    "fanout_items",
     "load_graph",
     "make_agent_factory",
     "make_llm_health_probe",
     "resolve_prompt",
+    "render_fanout_prompt",
     "tool",
 ]

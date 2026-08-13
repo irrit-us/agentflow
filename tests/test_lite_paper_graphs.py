@@ -28,3 +28,15 @@ if not YAML_FILES:
     # Empty scaffold directory: skip loudly instead of silently passing zero tests.
     def test_paper_graphs_placeholder():
         pytest.skip("no paper architecture YAMLs under examples/paper_architectures yet")
+
+
+def test_dynamic_audit_example_loads_with_fanout():
+    path = REPO_ROOT / "examples" / "lite_dynamic_audit.yaml"
+
+    graph = load_graph(path)
+
+    assert graph.topo_order() == ["plan-links", "audit-link", "review-findings"]
+    audit = next(node for node in graph.nodes if node.id == "audit-link")
+    assert audit.fanout is not None
+    assert audit.fanout.items_path == "links"
+    assert audit.resource == "forge"

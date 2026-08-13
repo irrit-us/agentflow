@@ -14,7 +14,7 @@ from agentflow.lite import (
     make_agent_factory,
     make_llm_health_probe,
 )
-from agentflow.lite.graph import EdgeSpec
+from agentflow.lite.graph import EdgeSpec, FanOutSpec
 
 
 def _payload(content: str) -> dict:
@@ -56,6 +56,34 @@ def _pending_runner() -> GraphRunner:
         ],
     )
     return GraphRunner(graph, _dummy_factory())
+
+
+def _fanout_runner() -> GraphRunner:
+    graph = GraphSpec(
+        name="svc-fanout",
+        nodes=[
+            NodeSpec(id="plan", prompt="plan"),
+            NodeSpec(
+                id="audit",
+                prompt="audit {{ link.id }}",
+                fanout=FanOutSpec(from_="plan", items_path="links", item_var="link"),
+                resource="forge",
+            ),
+        ],
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        prompt = body["messages"][-1]["content"]
+        content = '{"links":[{"id":"L-1"}]}' if prompt == "plan" else "finding"
+        return httpx.Response(200, json=_payload(content))
+
+    llm = LiteLLMClient(
+        base_url="http://testserver/v1", transport=httpx.MockTransport(handler)
+    )
+    runner = GraphRunner(graph, make_agent_factory(client=llm, default_model="m"))
+    runner.run()
+    return runner
 
 
 def _dummy_factory():
@@ -100,6 +128,22 @@ def test_state_endpoint_structure():
     assert by_id["a"]["usage"]["total_tokens"] == 5
     assert by_id["a"]["started_at"] is not None
     assert by_id["a"]["error"] is None
+
+
+def test_state_and_inspect_expose_runtime_fanout_metadata():
+    client = TestClient(create_app(_fanout_runner()))
+
+    state = client.get("/api/state").json()
+    child = next(node for node in state["nodes"] if node["id"] == "audit--0001")
+    assert child["fanout_parent"] == "audit"
+    assert child["resource"] == "forge"
+    assert child["attempts"] == 1
+    assert ["plan", "audit--0001"] in state["edges"]
+    assert ["audit--0001", "audit"] in state["edges"]
+
+    inspected = client.get("/api/nodes/audit--0001/inspect").json()
+    assert inspected["fanout_item"] == {"id": "L-1"}
+    assert inspected["fanout_parent"] == "audit"
 
 
 def test_blocked_endpoint():
