@@ -1,0 +1,36 @@
+# Runtime-expanded security audit: plan -> per-link audit -> review.
+# The planner controls the amount of work without requiring a static node list.
+name: lite-dynamic-audit
+nodes:
+  - id: plan-links
+    prompt: |
+      Map the target repository to the vulnerability knowledge base. Return only
+      JSON in this shape:
+      {"links":[{"id":"L-001","semantic":"...","vulnerability":"..."}]}
+    resource: llm
+    priority: 100
+    max_attempts: 2
+
+  - id: audit-link
+    prompt: |
+      Audit semantic-vulnerability link {{ link.id }}.
+      Semantic: {{ link.semantic }}
+      Vulnerability: {{ link.vulnerability }}
+      Generate a specification and PoC, execute it, and return structured evidence.
+    fanout:
+      from: plan-links
+      items_path: links
+      item_var: link
+      max_items: 500
+    resource: forge
+    priority: 50
+    max_attempts: 2
+
+  - id: review-findings
+    prompt: |
+      Review, deduplicate, and rank these completed link audits:
+      {{ nodes.audit-link.text }}
+    depends_on: [audit-link]
+    resource: llm
+    priority: 10
+    max_attempts: 2

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import httpx
 
@@ -10,9 +11,11 @@ from agentflow.lite import (
     GraphSpec,
     LiteLLMClient,
     NodeSpec,
+    Usage,
     make_agent_factory,
 )
-from agentflow.lite.graph import EdgeSpec
+from agentflow.lite.agent import AgentResult
+from agentflow.lite.graph import EdgeSpec, FanOutSpec
 
 
 def _payload(content: str) -> dict:
@@ -265,3 +268,197 @@ def test_factory_without_container_has_no_run_command():
     agent = factory(NodeSpec(id="plain", prompt="p"))
 
     assert agent.registry.get("run_command") is None
+
+
+def test_runtime_fanout_expands_items_and_aggregates_results():
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="plan", prompt="plan"),
+            NodeSpec(
+                id="audit-link",
+                prompt="audit {{ link.id }}",
+                fanout=FanOutSpec(from_="plan", items_path="links", item_var="link"),
+                resource="llm",
+            ),
+            NodeSpec(
+                id="review",
+                prompt="review {{ nodes.audit-link.text }}",
+                depends_on=["audit-link"],
+            ),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        prompt = body["messages"][-1]["content"]
+        if prompt == "plan":
+            content = '{"links":[{"id":"L-1"},{"id":"L-2"}]}'
+        else:
+            content = f"answer:{prompt}"
+        return httpx.Response(200, json=_payload(content))
+
+    client = LiteLLMClient(
+        base_url="http://testserver/v1", transport=httpx.MockTransport(handler)
+    )
+    runner = GraphRunner(graph, make_agent_factory(client=client, default_model="m"))
+
+    nodes = runner.run().snapshot()["nodes"]
+
+    assert nodes["audit-link"].status == "finished"
+    assert nodes["audit-link--0001"].result.text == "answer:audit L-1"
+    assert nodes["audit-link--0002"].result.text == "answer:audit L-2"
+    aggregate = json.loads(nodes["audit-link"].result.text)
+    assert [entry["item"]["id"] for entry in aggregate] == ["L-1", "L-2"]
+    assert nodes["audit-link"].result.usage.total_tokens == 10
+    assert "answer:audit L-1" in nodes["review"].result.text
+    assert nodes["review"].started_at >= nodes["audit-link"].finished_at
+
+
+def test_resource_limits_bound_each_resource_independently():
+    lock = threading.Lock()
+    active = {"forge": 0, "llm": 0}
+    peaks = {"forge": 0, "llm": 0}
+    gate = threading.Barrier(2)
+
+    class RecordingAgent:
+        def __init__(self, resource: str):
+            self.resource = resource
+
+        def run(self, prompt: str) -> AgentResult:
+            with lock:
+                active[self.resource] += 1
+                peaks[self.resource] = max(peaks[self.resource], active[self.resource])
+            if self.resource == "llm":
+                gate.wait(timeout=5)
+            time.sleep(0.03)
+            with lock:
+                active[self.resource] -= 1
+            return AgentResult(text=prompt, messages=[], usage=Usage(), iterations=1)
+
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="forge-a", prompt="a", resource="forge"),
+            NodeSpec(id="forge-b", prompt="b", resource="forge"),
+            NodeSpec(id="llm-a", prompt="c", resource="llm"),
+            NodeSpec(id="llm-b", prompt="d", resource="llm"),
+        ]
+    )
+    runner = GraphRunner(
+        graph,
+        lambda spec: RecordingAgent(spec.resource),
+        max_workers=3,
+        resource_limits={"forge": 1, "llm": 2},
+    )
+
+    runner.run()
+
+    assert peaks == {"forge": 1, "llm": 2}
+
+
+def test_priority_controls_ready_node_submission():
+    order: list[str] = []
+
+    class RecordingAgent:
+        def run(self, prompt: str) -> AgentResult:
+            order.append(prompt)
+            return AgentResult(text=prompt, messages=[], usage=Usage(), iterations=1)
+
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="low", prompt="low", priority=0),
+            NodeSpec(id="high", prompt="high", priority=10),
+        ]
+    )
+
+    GraphRunner(graph, lambda spec: RecordingAgent(), max_workers=1).run()
+
+    assert order == ["high", "low"]
+
+
+def test_persisted_run_resumes_without_reexecuting_finished_nodes(tmp_path):
+    state_path = tmp_path / "run.json"
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        body = json.loads(request.content)
+        prompt = body["messages"][-1]["content"]
+        return httpx.Response(200, json=_payload(f"answer:{prompt}"))
+
+    graph = _linear_graph()
+    client = LiteLLMClient(
+        base_url="http://testserver/v1", transport=httpx.MockTransport(handler)
+    )
+    factory = make_agent_factory(client=client, default_model="m")
+    first = GraphRunner(graph, factory, state_path=state_path)
+    first.run()
+    assert requests == 2
+    assert state_path.is_file()
+
+    resumed = GraphRunner(graph, factory, state_path=state_path, resume=True)
+    resumed.run()
+
+    assert requests == 2
+    assert resumed.is_done() is True
+    assert resumed.state.snapshot()["nodes"]["a"].attempts == 1
+
+
+def test_resume_rejects_state_from_a_different_graph(tmp_path):
+    state_path = tmp_path / "run.json"
+    factory = make_agent_factory(client=_echo_client(), default_model="m")
+    GraphRunner(_linear_graph(), factory, state_path=state_path)
+    other = GraphSpec(nodes=[NodeSpec(id="other", prompt="other")])
+
+    import pytest
+
+    with pytest.raises(ValueError, match="does not match"):
+        GraphRunner(other, factory, state_path=state_path, resume=True)
+
+    with pytest.raises(ValueError, match="requires state_path"):
+        GraphRunner(other, factory, resume=True)
+
+
+def test_resume_requeues_an_interrupted_node(tmp_path):
+    state_path = tmp_path / "interrupted.json"
+    graph = GraphSpec(nodes=[NodeSpec(id="work", prompt="work")])
+    factory = make_agent_factory(client=_echo_client(), default_model="m")
+    interrupted = GraphRunner(graph, factory, state_path=state_path)
+    interrupted.state.start_attempt("work")
+    interrupted.state.set_status("work", "processing")
+
+    resumed = GraphRunner(graph, factory, state_path=state_path, resume=True)
+    before = resumed.state.snapshot()["nodes"]["work"]
+    assert before.status == "preparing"
+    assert before.started_at is None
+
+    after = resumed.run().snapshot()["nodes"]["work"]
+    assert after.status == "finished"
+    assert after.attempts == 2
+
+
+def test_node_retries_transient_failure_up_to_max_attempts():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(500, json={"error": {"message": "temporary"}})
+        return httpx.Response(200, json=_payload("recovered"))
+
+    client = LiteLLMClient(
+        base_url="http://testserver/v1",
+        transport=httpx.MockTransport(handler),
+        max_retries=0,
+    )
+    graph = GraphSpec(nodes=[NodeSpec(id="retry", prompt="work", max_attempts=2)])
+    runner = GraphRunner(graph, make_agent_factory(client=client, default_model="m"))
+
+    node = runner.run().snapshot()["nodes"]["retry"]
+
+    assert node.status == "finished"
+    assert node.result.text == "recovered"
+    assert node.error is None
+    assert node.attempts == 2
+    assert calls == 2

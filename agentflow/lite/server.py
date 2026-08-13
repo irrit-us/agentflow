@@ -46,6 +46,10 @@ def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = No
                 "started_at": nrun.started_at,
                 "finished_at": nrun.finished_at,
                 "error": nrun.error,
+                "attempts": nrun.attempts,
+                "resource": nrun.spec.resource,
+                "priority": nrun.spec.priority,
+                "fanout_parent": nrun.fanout_parent,
                 "usage": nrun.result.usage.model_dump() if nrun.result else None,
             }
             for nid, nrun in snapshot.items()
@@ -54,7 +58,7 @@ def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = No
             "name": runner.graph.name,
             "done": runner.is_done(),
             "nodes": nodes,
-            "edges": [[src, dst] for src, dst in runner.graph.all_edges()],
+            "edges": [[src, dst] for src, dst in runner.runtime_edges()],
         }
 
     @app.api_route("/api/blocked", methods=["GET", "HEAD"])
@@ -71,6 +75,11 @@ def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = No
             "node_id": node_id,
             "status": nrun.status,
             "error": nrun.error,
+            "attempts": nrun.attempts,
+            "resource": nrun.spec.resource,
+            "priority": nrun.spec.priority,
+            "fanout_parent": nrun.fanout_parent,
+            "fanout_item": nrun.fanout_item,
             "iterations": result.iterations if result else None,
             "usage": result.usage.model_dump() if result else None,
             "messages": [m.model_dump() for m in result.messages] if result else [],

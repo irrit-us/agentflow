@@ -142,6 +142,63 @@ A node may set `container: {image: ..., mounts: [...]}` to get its own
 `run_command` sandbox tool, and `tools: [name, ...]` to pick from a shared
 registry passed to `make_agent_factory(registry=...)`.
 
+### Runtime fan-out
+
+Long, data-dependent workloads do not need a statically generated DAG. A node
+with `fanout` reads a JSON list from an upstream result and becomes a runtime
+barrier: the runner creates one child task per item, runs those tasks in
+parallel, then finishes the parent with a JSON array of child item/result
+pairs. Downstream nodes continue to depend on the parent node, so the expanded
+graph remains acyclic.
+
+```yaml
+nodes:
+  - id: plan-links
+    prompt: 'Return JSON: {"links":[{"id":"L-001"}]}'
+  - id: audit-link
+    prompt: "Audit {{ link.id }}"
+    fanout:
+      from: plan-links
+      items_path: links
+      item_var: link
+      max_items: 500
+    resource: forge
+    max_attempts: 2
+  - id: review
+    prompt: "Review {{ nodes.audit-link.text }}"
+    depends_on: [audit-link]
+```
+
+The item placeholder accepts the full item (`{{ item }}`) or dotted object
+fields (`{{ item.id }}`). `max_items` is a guardrail against accidentally
+unbounded plans. A failed child fails the fan-out barrier; `max_attempts`
+retries transient node failures before that happens.
+
+### Resource limits and resume
+
+`max_workers` controls total concurrency. Optional resource limits separately
+bound scarce executors such as LLM endpoints, Foundry workers, and database
+writers. Higher-priority ready nodes are submitted first. A state path enables
+atomic snapshots: finished work is reused, while work that was processing when
+the process stopped is safely made ready again.
+
+```python
+runner = GraphRunner(
+    graph,
+    factory,
+    max_workers=8,
+    resource_limits={"llm": 2, "forge": 4, "db-writer": 1},
+    state_path="artifacts/runs/audit-state.json",
+    resume=True,
+)
+state = runner.run()
+```
+
+The state file belongs to one runner process. Resume rejects a state file if
+the graph definition changed, preventing results from a different workflow
+from being silently reused. See `examples/lite_dynamic_audit.yaml` for a
+planner-to-link-audit-to-review pipeline.
+
 ## Monitor
 
 `create_app` serves a JSON API plus a static single-page UI
