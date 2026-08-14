@@ -273,3 +273,32 @@ def test_deepseek_trace_parser_normalizes_tools_and_turn_end():
     assert result[0].content == "ok"
     assert ended[0].kind == "completed"
     assert ended[0].content == "completed"
+
+
+def test_zcode_trace_parser_extracts_headless_response():
+    parser = create_trace_parser(AgentKind.ZCODE, "implement")
+    lines = [
+        "{",
+        '  "sessionId": "sess_1",',
+        '  "traceId": "trace_1",',
+        '  "turnId": "turn_1",',
+        '  "response": "zcode answer",',
+        '  "eventCount": 3,',
+        '  "projection": {',
+        '    "status": "idle",',
+        '    "turnCount": 1,',
+        '    "totalTokenCount": 42,',
+        '    "contextUsed": 42,',
+        '    "contextWindow": 131072',
+        "  }",
+        "}",
+    ]
+
+    emitted = [parser.feed(line) for line in lines]
+    events = emitted[-1]
+
+    assert all(not events for events in emitted[:-1])
+    assert events[0].kind == "result"
+    assert events[0].content == "zcode answer"
+    assert parser.finalize() == "zcode answer"
+    assert parser.supports_raw_stdout_fallback() is False

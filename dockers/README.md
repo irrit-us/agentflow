@@ -14,12 +14,14 @@ docker build -f dockers/pi.Dockerfile -t agentflow-pi:bookworm-slim dockers
 docker build -f dockers/kimi.Dockerfile -t agentflow-kimi:bookworm-slim dockers
 docker build -f dockers/opencode.Dockerfile -t agentflow-opencode:bookworm-slim dockers
 docker build -f dockers/goose.Dockerfile -t agentflow-goose:bookworm-slim dockers
+docker build -f dockers/deepseek.Dockerfile -t agentflow-deepseek:bookworm-slim dockers
+docker build -f dockers/zcode.Dockerfile -t agentflow-zcode:bookworm-slim dockers
 docker build -f dockers/python.Dockerfile -t agentflow-python:bookworm-slim dockers
 docker build -f dockers/shell.Dockerfile -t agentflow-shell:bookworm-slim dockers
 docker build -f dockers/sync.Dockerfile -t agentflow-sync:bookworm-slim dockers
 ```
 
-The npm-based images (`codex`, `claude`, `pi`, `opencode`) install Node.js 22
+The Node-based images (`codex`, `claude`, `pi`, `opencode`, `deepseek`, `zcode`) install Node.js 22
 from NodeSource (the bookworm distro package is too old), keeping the images
 slim. The `kimi` image installs `kimi-cli` with `uv tool install`, which reuses
 the base image's Python 3.12 in an isolated venv.
@@ -35,6 +37,8 @@ the base image's Python 3.12 in an isolated venv.
 | `agentflow-kimi` | kimi | base + `kimi-cli` (uv tool install) |
 | `agentflow-opencode` | opencode | base + Node.js + `opencode-ai` |
 | `agentflow-goose` | goose | base + `goose` v1.45.0 binary |
+| `agentflow-deepseek` | deepseek | base + Node.js + DeepSeek Harness + `ddgr` |
+| `agentflow-zcode` | zcode | base + Node.js + ZCode CLI |
 | `agentflow-python` | python | base (thin) |
 | `agentflow-shell` | shell | base (thin) |
 | `agentflow-sync` | sync | base + openssh-client, rsync, tar |

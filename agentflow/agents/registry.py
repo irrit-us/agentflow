@@ -9,6 +9,7 @@ from agentflow.agents.kimi import KimiAdapter
 from agentflow.agents.opencode import OpenCodeAdapter
 from agentflow.agents.pi import PiAdapter
 from agentflow.agents.util import PythonAdapter, ShellAdapter, SyncAdapter
+from agentflow.agents.zcode import ZCodeAdapter
 from agentflow.specs import AgentKind
 
 
@@ -17,6 +18,7 @@ class AdapterRegistry:
         self._registry: dict[AgentKind, AgentAdapter] = {
             AgentKind.CODEX: CodexAdapter(),
             AgentKind.DEEPSEEK: DeepSeekAdapter(),
+            AgentKind.ZCODE: ZCodeAdapter(),
             AgentKind.CLAUDE: ClaudeAdapter(),
             AgentKind.KIMI: KimiAdapter(),
             AgentKind.PI: PiAdapter(),

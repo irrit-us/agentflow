@@ -484,6 +484,11 @@ def deepseek(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     return _node(AgentKind.DEEPSEEK, task_id=task_id, prompt=prompt, **kwargs)
 
 
+def zcode(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
+    """Run ZCode through its non-interactive JSON prompt interface."""
+    return _node(AgentKind.ZCODE, task_id=task_id, prompt=prompt, **kwargs)
+
+
 def claude(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     return _node(AgentKind.CLAUDE, task_id=task_id, prompt=prompt, **kwargs)
 

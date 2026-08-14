@@ -17,6 +17,7 @@ from agentflow import (
     opencode,
     pi,
     shell,
+    zcode,
 )
 from agentflow.loader import load_pipeline_from_text
 
@@ -154,6 +155,14 @@ def test_deepseek_helper_builds_a_deepseek_node():
 
     node = dag.to_spec().node_map["implement"]
     assert node.agent == "deepseek"
+
+
+def test_zcode_helper_builds_a_zcode_node():
+    with Graph("zcode-demo") as dag:
+        zcode(task_id="implement", prompt="Implement the change")
+
+    node = dag.to_spec().nodes[0]
+    assert node.agent == "zcode"
     assert node.prompt == "Implement the change"
 
 

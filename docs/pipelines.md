@@ -5,7 +5,7 @@ Pipeline authoring details, execution targets, and per-agent launch behavior.
 ## Python DAG
 
 ```python
-from agentflow import DAG, claude, codex, deepseek, goose, kimi, opencode, pi
+from agentflow import DAG, claude, codex, deepseek, goose, kimi, opencode, pi, zcode
 
 with DAG("demo", working_dir=".", concurrency=3) as dag:
     plan = codex(task_id="plan", prompt="Inspect the repo and plan the work.")
@@ -40,7 +40,7 @@ See `examples/airflow_like.py` for the small static DAG. `examples/airflow_like_
 
 Each node supports:
 
-- `agent`: `codex`, `deepseek`, `claude`, `kimi`, `pi`, `opencode`, `goose`, `python`, `shell`, or `sync`
+- `agent`: `codex`, `deepseek`, `zcode`, `claude`, `kimi`, `pi`, `opencode`, `goose`, `python`, `shell`, or `sync`
 - `fanout`: `count`, `values`, `matrix`, `group_by`, or `batches`, plus optional `as`, `derive`, and matrix-only `include` / `exclude`
 - `schedule`: optional periodic execution for local nodes with `every_seconds`, `until_fanout_settles_from`, and optional `actuation`
 - `model`: any model string understood by the backend
@@ -62,7 +62,7 @@ Top-level pipeline controls include:
 - `concurrency`: max parallel nodes within a run
 - `fail_fast`: skip downstream work after the first failed node
 - `node_defaults`: shared node fields merged into every node before validation
-- `agent_defaults`: agent-specific shared node fields keyed by `codex`, `deepseek`, `claude`, `kimi`, `pi`, `opencode`, or `goose`
+- `agent_defaults`: agent-specific shared node fields keyed by `codex`, `deepseek`, `zcode`, `claude`, `kimi`, `pi`, `opencode`, or `goose`
 - `optimizer`: optional optimizer backend, one of `codex`, `claude`, `kimi`, or `pi`
 - `n_run`: optional integer; when `> 1`, runs optimization rounds before execution
 
@@ -298,6 +298,7 @@ docker build -f dockers/kimi.Dockerfile -t agentflow-kimi:bookworm-slim dockers
 docker build -f dockers/opencode.Dockerfile -t agentflow-opencode:bookworm-slim dockers
 docker build -f dockers/goose.Dockerfile -t agentflow-goose:bookworm-slim dockers
 docker build -f dockers/deepseek.Dockerfile -t agentflow-deepseek:bookworm-slim dockers
+docker build -f dockers/zcode.Dockerfile -t agentflow-zcode:bookworm-slim dockers
 ```
 
 `agentflow-python`, `agentflow-shell`, and `agentflow-sync` are thin images on top of the base for the utility agents (`python3 -c`, `bash -c`, and rsync/tar/ssh sync respectively).
@@ -317,9 +318,10 @@ Per-node container fields include `image`, `engine` (default `docker`), `workdir
 
 The adapters are pinned against real CLI binaries; command shapes below match
 these verified versions: Claude Code 2.1.226, Codex CLI 0.146.1, Kimi 0.34.0,
-pi 0.84.1, OpenCode 1.18.15 (with `OPENCODE_CONFIG`), Goose 1.45.0, and the
-DeepSeek Harness headless profile on its primary branch. When a CLI bumps a
-flag, update the adapter and its shape tests together.
+pi 0.84.1, OpenCode 1.18.15 (with `OPENCODE_CONFIG`), Goose 1.45.0, ZCode CLI
+0.16.3 from ZCode 3.7.7, and the DeepSeek Harness headless profile on its
+primary branch. When a CLI bumps a flag, update the adapter and its shape tests
+together.
 
 ### Codex
 
@@ -347,6 +349,14 @@ flag, update the adapter and its shape tests together.
 - Leaves provider, model, MCP, and repository-instruction composition with the Harness profile, and rejects conflicting node-scoped settings instead of creating a parallel Harness configuration path
 - Resolves the executable from the node, `AGENTFLOW_DEEPSEEK_EXECUTABLE`, or `dsh`, in that order
 - Ships `dockers/deepseek.Dockerfile` on the shared `agentflow-base:bookworm-slim` image and pins the verified Harness commit; override `DSH_REPOSITORY` and `DSH_REF` together only for an intentional Harness upgrade
+
+### ZCode
+
+- Uses `zcode --json --no-color --mode <mode> --prompt ...` and consumes the terminal JSON result
+- Maps read-only nodes to `plan` mode and read-write nodes to `yolo`; `AGENTFLOW_ZCODE_MODE` can explicitly select `build`, `edit`, `plan`, or `yolo`
+- Leaves authentication, provider/model selection, MCP services, and repository instructions with ZCode, and rejects conflicting node-scoped settings
+- Resolves the executable from the node, `AGENTFLOW_ZCODE_EXECUTABLE`, or `zcode`, in that order
+- Ships `dockers/zcode.Dockerfile` on the shared `agentflow-base:bookworm-slim` image and pins the official ZCode 3.7.7 Linux x64 package by SHA-256
 
 ### OpenCode
 

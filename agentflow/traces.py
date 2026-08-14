@@ -561,6 +561,43 @@ class GenericTraceParser(BaseTraceParser):
         return [self.emit("stdout", "stdout", text, line)] if text else []
 
 
+@dataclass(slots=True)
+class ZCodeTraceParser(BaseTraceParser):
+    """Consume the single JSON result emitted by ``zcode --prompt --json``."""
+
+    document_lines: list[str] = field(default_factory=list)
+
+    def supports_raw_stdout_fallback(self) -> bool:
+        return False
+
+    def start_attempt(self, attempt: int) -> None:
+        super().start_attempt(attempt)
+        self.document_lines.clear()
+
+    def feed(self, line: str) -> list[NormalizedTraceEvent]:
+        text = line.rstrip()
+        if not self.document_lines and not text.lstrip().startswith("{"):
+            return [self.emit("stdout", "stdout", text, line)] if text else []
+        if self.document_lines and text.lstrip().startswith("{"):
+            self.document_lines.clear()
+        self.document_lines.append(text)
+        payload = _json("\n".join(self.document_lines))
+        if not isinstance(payload, dict):
+            return []
+        self.document_lines.clear()
+
+        response = payload.get("response")
+        if isinstance(response, str):
+            self.final_chunks.clear()
+            self.last_message = response
+            if response:
+                self.final_chunks.append(response)
+            return [self.emit("result", "Result", response, payload)]
+
+        event_type = str(payload.get("type") or payload.get("event") or "zcode")
+        return [self.emit("event", event_type, _stringify(payload), payload)]
+
+
 def create_trace_parser(agent: AgentKind, node_id: str) -> BaseTraceParser:
     match agent:
         case AgentKind.CODEX:
@@ -577,4 +614,6 @@ def create_trace_parser(agent: AgentKind, node_id: str) -> BaseTraceParser:
             return GooseTraceParser(node_id=node_id, agent=agent)
         case AgentKind.DEEPSEEK:
             return DeepSeekTraceParser(node_id=node_id, agent=agent)
+        case AgentKind.ZCODE:
+            return ZCodeTraceParser(node_id=node_id, agent=agent)
     return GenericTraceParser(node_id=node_id, agent=agent)

@@ -1,6 +1,6 @@
 ---
 name: agentflow
-description: Design, validate, and run AgentFlow core pipelines that coordinate external coding-agent CLIs, including DeepSeek Harness. Use when the user mentions AgentFlow, asks for an AgentFlow DAG or DeepSeek Harness node, or needs AgentFlow-specific sequencing, fan-out/merge, guarded branches, bounded retry loops, graph optimization, utility nodes, or local/container/SSH/EC2/ECS execution. Do not use for generic CI or data pipelines, OpenAI Agents SDK orchestration, or agentflow.lite YAML graphs unless the user explicitly asks to translate them to AgentFlow core.
+description: Design, validate, and run AgentFlow core pipelines that coordinate external coding-agent CLIs, including DeepSeek Harness and ZCode. Use when the user mentions AgentFlow, asks for an AgentFlow DAG, DeepSeek Harness node, or ZCode node, or needs AgentFlow-specific sequencing, fan-out/merge, guarded branches, bounded retry loops, graph optimization, utility nodes, or local/container/SSH/EC2/ECS execution. Do not use for generic CI or data pipelines, OpenAI Agents SDK orchestration, or agentflow.lite YAML graphs unless the user explicitly asks to translate them to AgentFlow core.
 ---
 
 # Build AgentFlow core pipelines
@@ -26,6 +26,7 @@ Create the smallest auditable DAG that accomplishes the user's goal. Treat pipel
 - Reference runtime data with Jinja expressions such as `{{ nodes.plan.output }}` and `{{ nodes.review.status }}`. Do not interpolate upstream results while constructing the graph.
 - Default agent nodes to `tools="read_only"`. Grant `tools="read_write"` only to nodes that must modify the workspace.
 - Let the Harness headless profile own provider, model, MCP, and repository-instruction composition for `deepseek` nodes. Configure those concerns through Harness profiles or patches, not parallel node-scoped settings.
+- Let ZCode own authentication, provider/model selection, MCP services, and repository-instruction loading for `zcode` nodes. Configure those concerns through ZCode settings, not parallel node-scoped settings.
 - Set `use_worktree=True` when parallel writers need isolated Git worktrees. Use `scratchboard=True` only when deliberate shared mutable memory is part of the design.
 - Keep secrets out of prompts and pipeline files. Use the supported environment-variable or target credential configuration for the installed version.
 - Keep concurrency within provider and machine limits. Add `rate_limits` when a provider requires explicit throttling.
@@ -66,7 +67,7 @@ with Graph("change-review", working_dir=".", concurrency=2) as graph:
 print(graph.to_json())
 ```
 
-Select `codex`, `claude`, `deepseek`, `kimi`, `pi`, `opencode`, or `goose` only when that CLI is available and authenticated. Use `python_node` or `shell` for deterministic local work that does not need an LLM, and use `sync` only for explicit remote synchronization.
+Select `codex`, `claude`, `deepseek`, `zcode`, `kimi`, `pi`, `opencode`, or `goose` only when that CLI is available and authenticated. Use `python_node` or `shell` for deterministic local work that does not need an LLM, and use `sync` only for explicit remote synchronization.
 
 ## Use DeepSeek Harness nodes
 
@@ -88,6 +89,26 @@ print(graph.to_json())
 - Rely on the shipped headless profile for Bash, file read/write/edit, and `glob`/`grep` search through its packaged ripgrep. Its `web_search` uses DeepSeek's official search first and falls back to local `ddgr` only when the primary is unavailable or lacks credentials; `web_fetch` is disabled by default. Ensure `ddgr` is on `PATH` for local runs that need the fallback.
 - Do not set node-scoped `provider`, `model`, `mcps`, or `repo_instructions_mode="ignore"`; the adapter rejects them. Compose Harness configuration with a patch such as `extra_args=["--patch", "team.yml"]`.
 - For container execution, build and use `agentflow-deepseek:bookworm-slim` from `dockers/deepseek.Dockerfile`. It shares the AgentFlow base image, pins the verified Harness revision, and includes `ddgr`.
+
+## Use ZCode nodes
+
+```python
+from agentflow import Graph, zcode
+
+with Graph("zcode-change", working_dir=".") as graph:
+    zcode(
+        task_id="implement",
+        prompt="Inspect the repository, implement the requested change, and run focused tests.",
+        tools="read_write",
+    )
+
+print(graph.to_json())
+```
+
+- Expect the adapter to launch `zcode --json --no-color --mode yolo --prompt ...` for read-write nodes and use `plan` mode for read-only nodes. Set `AGENTFLOW_ZCODE_MODE` to `build`, `edit`, `plan`, or `yolo` only when an explicit override is needed.
+- Do not set node-scoped `provider`, `model`, `mcps`, or `repo_instructions_mode="ignore"`; the adapter rejects them so ZCode remains the single configuration owner.
+- Override the executable with the node's `executable` field or `AGENTFLOW_ZCODE_EXECUTABLE` only when `zcode` is not on `PATH`.
+- For container execution, build and use `agentflow-zcode:bookworm-slim` from `dockers/zcode.Dockerfile`. It shares the AgentFlow base image and pins the official ZCode 3.7.7 Linux x64 package by SHA-256; provide user settings at runtime rather than baking credentials into the image.
 
 ## Choose the right graph primitive
 

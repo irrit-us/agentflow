@@ -18,6 +18,7 @@ from agentflow.dsl import (
     python_node,
     shell,
     sync,
+    zcode,
 )
 
 
@@ -45,5 +46,6 @@ __all__ = [
     "python_node",
     "shell",
     "sync",
+    "zcode",
     "create_app",
 ]

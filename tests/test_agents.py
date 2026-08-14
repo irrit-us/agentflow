@@ -12,6 +12,7 @@ from agentflow.agents.kimi import KimiAdapter
 from agentflow.agents.opencode import OpenCodeAdapter
 from agentflow.agents.pi import PiAdapter
 from agentflow.agents.registry import AdapterRegistry
+from agentflow.agents.zcode import ZCodeAdapter
 from agentflow.agents.util import PythonAdapter, ShellAdapter
 from agentflow.prepared import ExecutionPaths
 from agentflow.specs import AgentKind, NodeSpec
@@ -1264,3 +1265,101 @@ def test_deepseek_adapter_rejects_configuration_owned_by_harness_profile(tmp_pat
 
     with pytest.raises(ValueError, match=message):
         DeepSeekAdapter().prepare(node, "Run", _paths(tmp_path))
+
+
+def test_zcode_adapter_uses_headless_json_contract(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "implement",
+            "agent": "zcode",
+            "prompt": "Implement it",
+            "extra_args": ["--settings", "/tmp/zcode-settings.json"],
+        }
+    )
+
+    prepared = ZCodeAdapter().prepare(node, "Implement it", _paths(tmp_path))
+
+    assert prepared.command == [
+        "zcode",
+        "--json",
+        "--no-color",
+        "--mode",
+        "plan",
+        "--settings",
+        "/tmp/zcode-settings.json",
+        "--prompt",
+        "Implement it",
+    ]
+    assert prepared.env == {}
+    assert prepared.cwd == str(tmp_path)
+    assert prepared.trace_kind == "zcode"
+
+
+def test_zcode_adapter_is_registered_by_default():
+    assert isinstance(AdapterRegistry().get(AgentKind.ZCODE), ZCodeAdapter)
+
+
+def test_zcode_adapter_maps_write_access_and_allows_mode_override(tmp_path):
+    writable = NodeSpec.model_validate(
+        {"id": "write", "agent": "zcode", "prompt": "Write", "tools": "read_write"}
+    )
+    overridden = NodeSpec.model_validate(
+        {
+            "id": "override",
+            "agent": "zcode",
+            "prompt": "Write",
+            "env": {"AGENTFLOW_ZCODE_MODE": "edit", "KEEP": "value"},
+        }
+    )
+
+    writable_prepared = ZCodeAdapter().prepare(writable, "Write", _paths(tmp_path))
+    overridden_prepared = ZCodeAdapter().prepare(overridden, "Write", _paths(tmp_path))
+    assert writable_prepared.command[4] == "yolo"
+    assert overridden_prepared.command[4] == "edit"
+    assert overridden_prepared.env == {"KEEP": "value"}
+
+
+def test_zcode_adapter_rejects_invalid_mode_override(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "run",
+            "agent": "zcode",
+            "prompt": "Run",
+            "env": {"AGENTFLOW_ZCODE_MODE": "unrestricted"},
+        }
+    )
+
+    with pytest.raises(ValueError, match="AGENTFLOW_ZCODE_MODE must be one of"):
+        ZCodeAdapter().prepare(node, "Run", _paths(tmp_path))
+
+
+def test_zcode_adapter_respects_executable_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTFLOW_ZCODE_EXECUTABLE", "zcode-from-env")
+    ambient = NodeSpec.model_validate({"id": "ambient", "agent": "zcode", "prompt": "Run"})
+    explicit = NodeSpec.model_validate(
+        {"id": "explicit", "agent": "zcode", "prompt": "Run", "executable": "custom-zcode"}
+    )
+
+    assert ZCodeAdapter().prepare(ambient, "Run", _paths(tmp_path)).command[0] == "zcode-from-env"
+    assert ZCodeAdapter().prepare(explicit, "Run", _paths(tmp_path)).command[0] == "custom-zcode"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("provider", "fixture", "owns provider and model selection"),
+        ("model", "fixture-model", "owns provider and model selection"),
+        (
+            "mcps",
+            [{"name": "fixture", "transport": "stdio", "command": "fixture-mcp"}],
+            "node-scoped MCP",
+        ),
+        ("repo_instructions_mode", "ignore", "does not support repo_instructions_mode='ignore'"),
+    ],
+)
+def test_zcode_adapter_rejects_configuration_owned_by_zcode(tmp_path, field, value, message):
+    payload = {"id": "run", "agent": "zcode", "prompt": "Run", field: value}
+    node = NodeSpec.model_validate(payload)
+
+    with pytest.raises(ValueError, match=message):
+        ZCodeAdapter().prepare(node, "Run", _paths(tmp_path))

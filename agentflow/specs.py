@@ -40,6 +40,7 @@ from agentflow.local_shell import (
 class AgentKind(StrEnum):
     CODEX = "codex"
     DEEPSEEK = "deepseek"
+    ZCODE = "zcode"
     CLAUDE = "claude"
     KIMI = "kimi"
     PI = "pi"

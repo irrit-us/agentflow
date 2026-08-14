@@ -1,6 +1,6 @@
 # AgentFlow
 
-Orchestrate Codex, Claude, Kimi, DeepSeek Harness, and other coding agents in dependency graphs with parallel fanout, iterative cycles, and remote execution on SSH/EC2/ECS.
+Orchestrate Codex, Claude, Kimi, DeepSeek Harness, ZCode, and other coding agents in dependency graphs with parallel fanout, iterative cycles, and remote execution on SSH/EC2/ECS.
 
 ![AgentFlow Graph](docs/graph.png)
 *94-node pipeline: plan → 64 workers → 8 batch merges → 16 reviews → 4 review merges → synthesis*
@@ -149,6 +149,27 @@ print(g.to_json())
 AgentFlow invokes `dsh --profile headless --output-format stream-json`, maps tool access to `DSH_PERMISSION_MODE`, and consumes the Harness session-event stream. Provider, model, MCP, and repository-instruction composition remain owned by the DeepSeek Harness profile; do not set `provider`, `model`, node-scoped `mcps`, or `repo_instructions_mode="ignore"` on these nodes. Set `executable` or `AGENTFLOW_DEEPSEEK_EXECUTABLE` when `dsh` is not on `PATH`.
 
 For container nodes, build `dockers/deepseek.Dockerfile` after the shared base image and use `agentflow-deepseek:bookworm-slim`. The image pins the verified Harness commit while preserving `DSH_REPOSITORY` and `DSH_REF` as build arguments for deliberate upgrades.
+
+## ZCode
+
+Use the `zcode()` helper when the ZCode CLI is installed and configured on the execution target:
+
+```python
+from agentflow import Graph, zcode
+
+with Graph("zcode-run") as g:
+    zcode(
+        task_id="implement",
+        prompt="Implement the requested change and run focused tests.",
+        tools="read_write",
+    )
+
+print(g.to_json())
+```
+
+AgentFlow invokes `zcode --json --no-color --mode yolo --prompt ...` for read-write nodes and uses `--mode plan` for read-only nodes. Set `AGENTFLOW_ZCODE_MODE` to `build`, `edit`, `plan`, or `yolo` when the default mapping is not suitable. ZCode remains responsible for authentication, provider/model selection, MCP services, and repository instructions; configure those in ZCode rather than setting `provider`, `model`, node-scoped `mcps`, or `repo_instructions_mode="ignore"`. Set `executable` or `AGENTFLOW_ZCODE_EXECUTABLE` when `zcode` is not on `PATH`.
+
+For container nodes, build `dockers/zcode.Dockerfile` after the shared base image and use `agentflow-zcode:bookworm-slim`. Mount or otherwise provide the required ZCode user settings at runtime; the image does not bake credentials into a layer.
 
 ## Inference via SkyPilot
 
