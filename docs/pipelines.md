@@ -5,7 +5,7 @@ Pipeline authoring details, execution targets, and per-agent launch behavior.
 ## Python DAG
 
 ```python
-from agentflow import DAG, claude, codex, goose, kimi, opencode, pi
+from agentflow import DAG, claude, codex, deepseek, goose, kimi, opencode, pi
 
 with DAG("demo", working_dir=".", concurrency=3) as dag:
     plan = codex(task_id="plan", prompt="Inspect the repo and plan the work.")
@@ -40,7 +40,7 @@ See `examples/airflow_like.py` for the small static DAG. `examples/airflow_like_
 
 Each node supports:
 
-- `agent`: `codex`, `claude`, `kimi`, `pi`, `opencode`, `goose`, `python`, `shell`, or `sync`
+- `agent`: `codex`, `deepseek`, `claude`, `kimi`, `pi`, `opencode`, `goose`, `python`, `shell`, or `sync`
 - `fanout`: `count`, `values`, `matrix`, `group_by`, or `batches`, plus optional `as`, `derive`, and matrix-only `include` / `exclude`
 - `schedule`: optional periodic execution for local nodes with `every_seconds`, `until_fanout_settles_from`, and optional `actuation`
 - `model`: any model string understood by the backend
@@ -62,7 +62,7 @@ Top-level pipeline controls include:
 - `concurrency`: max parallel nodes within a run
 - `fail_fast`: skip downstream work after the first failed node
 - `node_defaults`: shared node fields merged into every node before validation
-- `agent_defaults`: agent-specific shared node fields keyed by `codex`, `claude`, `kimi`, `pi`, `opencode`, or `goose`
+- `agent_defaults`: agent-specific shared node fields keyed by `codex`, `deepseek`, `claude`, `kimi`, `pi`, `opencode`, or `goose`
 - `optimizer`: optional optimizer backend, one of `codex`, `claude`, `kimi`, or `pi`
 - `n_run`: optional integer; when `> 1`, runs optimization rounds before execution
 
@@ -297,6 +297,7 @@ docker build -f dockers/pi.Dockerfile -t agentflow-pi:bookworm-slim dockers
 docker build -f dockers/kimi.Dockerfile -t agentflow-kimi:bookworm-slim dockers
 docker build -f dockers/opencode.Dockerfile -t agentflow-opencode:bookworm-slim dockers
 docker build -f dockers/goose.Dockerfile -t agentflow-goose:bookworm-slim dockers
+docker build -f dockers/deepseek.Dockerfile -t agentflow-deepseek:bookworm-slim dockers
 ```
 
 `agentflow-python`, `agentflow-shell`, and `agentflow-sync` are thin images on top of the base for the utility agents (`python3 -c`, `bash -c`, and rsync/tar/ssh sync respectively).
@@ -316,8 +317,9 @@ Per-node container fields include `image`, `engine` (default `docker`), `workdir
 
 The adapters are pinned against real CLI binaries; command shapes below match
 these verified versions: Claude Code 2.1.226, Codex CLI 0.146.1, Kimi 0.34.0,
-pi 0.84.1, OpenCode 1.18.15 (with `OPENCODE_CONFIG`), and Goose 1.45.0. When a
-CLI bumps a flag, update the adapter and its shape tests together.
+pi 0.84.1, OpenCode 1.18.15 (with `OPENCODE_CONFIG`), Goose 1.45.0, and the
+DeepSeek Harness headless profile on its primary branch. When a CLI bumps a
+flag, update the adapter and its shape tests together.
 
 ### Codex
 
@@ -337,6 +339,14 @@ CLI bumps a flag, update the adapter and its shape tests together.
 - Uses `kimi --output-format stream-json -p` (0.34.0 dropped `--print`/`--yolo` and removed `--mcp-config-file`)
 - Maps `provider.api_key_env`/`base_url` to `KIMI_API_KEY`/`KIMI_BASE_URL`, and a node `model` to `KIMI_MODEL_NAME` plus `KIMI_MODEL_API_KEY`/`KIMI_MODEL_BASE_URL`
 - Writes MCP servers into `<KIMI_CODE_HOME>/mcp.json` and points `KIMI_CODE_HOME` at the node runtime dir, because kimi loads MCP servers from its user-global home
+
+### DeepSeek Harness
+
+- Uses `dsh --profile headless --output-format stream-json` and consumes canonical Harness session events plus the terminal result record
+- Maps read-only and read-write tool modes to `DSH_PERMISSION_MODE=read-only` and `DSH_PERMISSION_MODE=workspace-write`; an explicit node environment value takes precedence
+- Leaves provider, model, MCP, and repository-instruction composition with the Harness profile, and rejects conflicting node-scoped settings instead of creating a parallel Harness configuration path
+- Resolves the executable from the node, `AGENTFLOW_DEEPSEEK_EXECUTABLE`, or `dsh`, in that order
+- Ships `dockers/deepseek.Dockerfile` on the shared `agentflow-base:bookworm-slim` image and pins the verified Harness commit; override `DSH_REPOSITORY` and `DSH_REF` together only for an intentional Harness upgrade
 
 ### OpenCode
 

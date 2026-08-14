@@ -1,6 +1,6 @@
 # AgentFlow
 
-Orchestrate codex, claude, and kimi agents in dependency graphs with parallel fanout, iterative cycles, and remote execution on SSH/EC2/ECS.
+Orchestrate Codex, Claude, Kimi, DeepSeek Harness, and other coding agents in dependency graphs with parallel fanout, iterative cycles, and remote execution on SSH/EC2/ECS.
 
 ![AgentFlow Graph](docs/graph.png)
 *94-node pipeline: plan → 64 workers → 8 batch merges → 16 reviews → 4 review merges → synthesis*
@@ -128,6 +128,27 @@ with Graph("mixed") as g:
 For one-off inline provider configs (e.g. a remote LMStudio box), pass a full
 `ProviderConfig` via `provider={...}` and AgentFlow materializes a scoped
 `models.json` for the run. See `examples/pi_local_lmstudio.py`.
+
+## DeepSeek Harness
+
+Use the `deepseek()` helper when `dsh` is installed and its `headless` profile is configured on the execution target:
+
+```python
+from agentflow import Graph, deepseek
+
+with Graph("deepseek-run") as g:
+    deepseek(
+        task_id="implement",
+        prompt="Implement the requested change and run focused tests.",
+        tools="read_write",
+    )
+
+print(g.to_json())
+```
+
+AgentFlow invokes `dsh --profile headless --output-format stream-json`, maps tool access to `DSH_PERMISSION_MODE`, and consumes the Harness session-event stream. Provider, model, MCP, and repository-instruction composition remain owned by the DeepSeek Harness profile; do not set `provider`, `model`, node-scoped `mcps`, or `repo_instructions_mode="ignore"` on these nodes. Set `executable` or `AGENTFLOW_DEEPSEEK_EXECUTABLE` when `dsh` is not on `PATH`.
+
+For container nodes, build `dockers/deepseek.Dockerfile` after the shared base image and use `agentflow-deepseek:bookworm-slim`. The image pins the verified Harness commit while preserving `DSH_REPOSITORY` and `DSH_REF` as build arguments for deliberate upgrades.
 
 ## Inference via SkyPilot
 

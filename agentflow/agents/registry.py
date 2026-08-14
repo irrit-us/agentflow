@@ -3,6 +3,7 @@ from __future__ import annotations
 from agentflow.agents.base import AgentAdapter
 from agentflow.agents.claude import ClaudeAdapter
 from agentflow.agents.codex import CodexAdapter
+from agentflow.agents.deepseek import DeepSeekAdapter
 from agentflow.agents.goose import GooseAdapter
 from agentflow.agents.kimi import KimiAdapter
 from agentflow.agents.opencode import OpenCodeAdapter
@@ -15,6 +16,7 @@ class AdapterRegistry:
     def __init__(self) -> None:
         self._registry: dict[AgentKind, AgentAdapter] = {
             AgentKind.CODEX: CodexAdapter(),
+            AgentKind.DEEPSEEK: DeepSeekAdapter(),
             AgentKind.CLAUDE: ClaudeAdapter(),
             AgentKind.KIMI: KimiAdapter(),
             AgentKind.PI: PiAdapter(),

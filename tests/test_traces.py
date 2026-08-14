@@ -220,3 +220,56 @@ def test_goose_trace_parser_emits_error_event():
     events = parser.feed('{"type":"error","error":"goose exploded"}')
     assert events[0].kind == "error"
     assert events[0].content == "goose exploded"
+
+
+def test_deepseek_trace_parser_uses_terminal_result_as_authoritative_output():
+    parser = create_trace_parser(AgentKind.DEEPSEEK, "implement")
+    assistant = parser.feed(
+        '{"type":"session_event","sessionId":"session-1","event":'
+        '{"type":"assistant/message","data":{"message":{"role":"assistant",'
+        '"content":[{"type":"text","text":"streamed answer"}]}}}}'
+    )
+    result = parser.feed(
+        '{"type":"result","sessionId":"session-1","output":"terminal answer"}'
+    )
+
+    assert assistant[0].kind == "assistant_message"
+    assert assistant[0].content == "streamed answer"
+    assert result[0].kind == "result"
+    assert parser.finalize() == "terminal answer"
+    assert parser.supports_raw_stdout_fallback() is False
+
+
+def test_deepseek_trace_parser_falls_back_to_last_assistant_message_without_result():
+    parser = create_trace_parser(AgentKind.DEEPSEEK, "implement")
+    parser.feed(
+        '{"type":"session_event","sessionId":"session-1","event":'
+        '{"type":"assistant/message","data":{"message":{"content":'
+        '[{"type":"text","text":"fallback"}]}}}}'
+    )
+
+    assert parser.finalize() == "fallback"
+
+
+def test_deepseek_trace_parser_normalizes_tools_and_turn_end():
+    parser = create_trace_parser(AgentKind.DEEPSEEK, "implement")
+    call = parser.feed(
+        '{"type":"session_event","event":{"type":"tool/call",'
+        '"data":{"name":"shell","arguments":"{\\"command\\":\\"pwd\\"}"}}}'
+    )
+    result = parser.feed(
+        '{"type":"session_event","event":{"type":"tool/result",'
+        '"data":{"message":{"content":[{"type":"tool-result","content":'
+        '[{"type":"text","text":"ok"}]}]}}}}'
+    )
+    ended = parser.feed(
+        '{"type":"session_event","event":{"type":"turn/end",'
+        '"data":{"reason":{"kind":"completed"}}}}'
+    )
+
+    assert call[0].kind == "tool_call"
+    assert call[0].title == "Tool call: shell"
+    assert result[0].kind == "tool_result"
+    assert result[0].content == "ok"
+    assert ended[0].kind == "completed"
+    assert ended[0].content == "completed"

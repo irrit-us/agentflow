@@ -6,13 +6,15 @@ from pathlib import Path
 
 from agentflow.agents.claude import ClaudeAdapter
 from agentflow.agents.codex import CodexAdapter
+from agentflow.agents.deepseek import DeepSeekAdapter
 from agentflow.agents.goose import GooseAdapter
 from agentflow.agents.kimi import KimiAdapter
 from agentflow.agents.opencode import OpenCodeAdapter
 from agentflow.agents.pi import PiAdapter
+from agentflow.agents.registry import AdapterRegistry
 from agentflow.agents.util import PythonAdapter, ShellAdapter
 from agentflow.prepared import ExecutionPaths
-from agentflow.specs import NodeSpec
+from agentflow.specs import AgentKind, NodeSpec
 
 import pytest
 import yaml
@@ -1179,3 +1181,86 @@ def test_python_adapter_uses_container_target_workdir(tmp_path):
     prepared = PythonAdapter().prepare(node, "print('hi')", _container_paths(tmp_path))
 
     assert prepared.cwd == "/workspace"
+
+
+def test_deepseek_adapter_uses_headless_stream_json_contract(tmp_path):
+    node = NodeSpec.model_validate(
+        {
+            "id": "implement",
+            "agent": "deepseek",
+            "prompt": "Implement it",
+            "extra_args": ["--patch", "team.yml"],
+        }
+    )
+
+    prepared = DeepSeekAdapter().prepare(node, "Implement it", _paths(tmp_path))
+
+    assert prepared.command == [
+        "dsh",
+        "--profile",
+        "headless",
+        "--output-format",
+        "stream-json",
+        "--patch",
+        "team.yml",
+        "Implement it",
+    ]
+    assert prepared.env["DSH_PERMISSION_MODE"] == "read-only"
+    assert prepared.cwd == str(tmp_path)
+    assert prepared.trace_kind == "deepseek"
+
+
+def test_deepseek_adapter_is_registered_by_default():
+    assert isinstance(AdapterRegistry().get(AgentKind.DEEPSEEK), DeepSeekAdapter)
+
+
+def test_deepseek_adapter_maps_write_access_without_overwriting_explicit_permission(tmp_path):
+    writable = NodeSpec.model_validate(
+        {"id": "write", "agent": "deepseek", "prompt": "Write", "tools": "read_write"}
+    )
+    overridden = NodeSpec.model_validate(
+        {
+            "id": "override",
+            "agent": "deepseek",
+            "prompt": "Write",
+            "tools": "read_write",
+            "env": {"DSH_PERMISSION_MODE": "danger-full-access"},
+        }
+    )
+
+    writable_env = DeepSeekAdapter().prepare(writable, "Write", _paths(tmp_path)).env
+    overridden_env = DeepSeekAdapter().prepare(overridden, "Write", _paths(tmp_path)).env
+    assert writable_env["DSH_PERMISSION_MODE"] == "workspace-write"
+    assert overridden_env["DSH_PERMISSION_MODE"] == "danger-full-access"
+
+
+def test_deepseek_adapter_respects_executable_overrides(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTFLOW_DEEPSEEK_EXECUTABLE", "dsh-from-env")
+    ambient = NodeSpec.model_validate({"id": "ambient", "agent": "deepseek", "prompt": "Run"})
+    explicit = NodeSpec.model_validate(
+        {"id": "explicit", "agent": "deepseek", "prompt": "Run", "executable": "custom-dsh"}
+    )
+
+    assert DeepSeekAdapter().prepare(ambient, "Run", _paths(tmp_path)).command[0] == "dsh-from-env"
+    assert DeepSeekAdapter().prepare(explicit, "Run", _paths(tmp_path)).command[0] == "custom-dsh"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("provider", "fixture", "owns provider and model selection"),
+        ("model", "fixture-model", "owns provider and model selection"),
+        (
+            "mcps",
+            [{"name": "fixture", "transport": "stdio", "command": "fixture-mcp"}],
+            "node-scoped MCP",
+        ),
+        ("repo_instructions_mode", "ignore", "does not support repo_instructions_mode='ignore'"),
+    ],
+)
+def test_deepseek_adapter_rejects_configuration_owned_by_harness_profile(tmp_path, field, value, message):
+    payload = {"id": "run", "agent": "deepseek", "prompt": "Run", field: value}
+    node = NodeSpec.model_validate(payload)
+
+    with pytest.raises(ValueError, match=message):
+        DeepSeekAdapter().prepare(node, "Run", _paths(tmp_path))

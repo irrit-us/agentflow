@@ -9,6 +9,7 @@ from agentflow import (
     InferenceSetup,
     claude,
     codex,
+    deepseek,
     fanout,
     goose,
     kimi,
@@ -145,6 +146,15 @@ def test_airflow_like_dag_builds_dependencies():
     assert nodes["implement"].depends_on == ["plan"]
     assert nodes["review"].depends_on == ["plan"]
     assert set(nodes["merge"].depends_on) == {"implement", "review"}
+
+
+def test_deepseek_helper_builds_a_deepseek_node():
+    with Graph("deepseek-demo") as dag:
+        deepseek(task_id="implement", prompt="Implement the change")
+
+    node = dag.to_spec().node_map["implement"]
+    assert node.agent == "deepseek"
+    assert node.prompt == "Implement the change"
 
 
 def test_dag_and_node_repr_and_payload_isolation():

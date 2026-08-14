@@ -488,6 +488,72 @@ class GooseTraceParser(BaseTraceParser):
 
 
 @dataclass(slots=True)
+class DeepSeekTraceParser(BaseTraceParser):
+    """Parser for DeepSeek Harness's headless stream-JSON contract."""
+
+    def supports_raw_stdout_fallback(self) -> bool:
+        return False
+
+    def _message_text(self, message: Any) -> str:
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return ""
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+
+    def feed(self, line: str) -> list[NormalizedTraceEvent]:
+        payload = _json(line)
+        if not isinstance(payload, dict):
+            text = line.rstrip()
+            return [self.emit("stdout", "stdout", text, line)] if text else []
+
+        record_type = payload.get("type")
+        if record_type == "result":
+            output = payload.get("output")
+            text = output if isinstance(output, str) else ""
+            self.final_chunks.clear()
+            self.last_message = text
+            if text:
+                self.final_chunks.append(text)
+            return [self.emit("result", "Result", text, payload)]
+
+        if record_type != "session_event":
+            return [self.emit("event", str(record_type or "deepseek"), _stringify(payload), payload)]
+
+        event = payload.get("event")
+        if not isinstance(event, dict):
+            return [self.emit("event", "Session event", "", payload)]
+        event_type = str(event.get("type") or "session_event")
+        data = event.get("data")
+        data = data if isinstance(data, dict) else {}
+
+        if event_type == "assistant/message":
+            text = self._message_text(data.get("message"))
+            if text:
+                self.last_message = text
+            return [self.emit("assistant_message", "Assistant message", text, payload)]
+        if event_type == "tool/call":
+            name = str(data.get("name") or "tool")
+            return [self.emit("tool_call", f"Tool call: {name}", _stringify(data.get("arguments")), payload)]
+        if event_type == "tool/result":
+            return [self.emit("tool_result", "Tool result", _stringify(data.get("message")), payload)]
+        if event_type == "turn/end":
+            reason = data.get("reason")
+            reason_kind = reason.get("kind") if isinstance(reason, dict) else reason
+            return [self.emit("completed", "Turn ended", _stringify(reason_kind), payload)]
+        return [self.emit("event", event_type, _stringify(data), payload)]
+
+
+@dataclass(slots=True)
 class GenericTraceParser(BaseTraceParser):
     def feed(self, line: str) -> list[NormalizedTraceEvent]:
         text = line.rstrip()
@@ -509,4 +575,6 @@ def create_trace_parser(agent: AgentKind, node_id: str) -> BaseTraceParser:
             return OpenCodeTraceParser(node_id=node_id, agent=agent)
         case AgentKind.GOOSE:
             return GooseTraceParser(node_id=node_id, agent=agent)
+        case AgentKind.DEEPSEEK:
+            return DeepSeekTraceParser(node_id=node_id, agent=agent)
     return GenericTraceParser(node_id=node_id, agent=agent)
