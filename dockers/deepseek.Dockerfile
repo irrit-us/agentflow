@@ -2,13 +2,13 @@
 FROM agentflow-base:bookworm-slim
 
 ARG DSH_REPOSITORY=https://github.com/irrit-us/deepseek-harness.git
-ARG DSH_REF=1f9f79c71e28ac844a7d56eaa14432aa056b8706
+ARG DSH_REF=de86797042274afa5293c3ec9f400ef2b9d86d1c
 
 RUN apt-get update \
     && curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh \
     && bash /tmp/nodesource_setup.sh \
     && rm /tmp/nodesource_setup.sh \
-    && apt-get install -y --no-install-recommends build-essential nodejs \
+    && apt-get install -y --no-install-recommends build-essential ddgr nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && npm install -g --no-fund --no-audit pnpm@11.7.0 \
     && git init /opt/deepseek-harness \
