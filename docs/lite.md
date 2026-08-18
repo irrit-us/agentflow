@@ -43,6 +43,53 @@ registry = ToolRegistry([add])
 print(registry.dispatch(ToolCall(id="1", name="add", arguments={"a": 2, "b": 3})))  # "5"
 ```
 
+### Shared tool access
+
+`ToolSharingConfig` protects selected handlers across all registry views made
+by `ToolRegistry.subset`. `make_agent_factory` uses those shared views, so
+parallel graph nodes coordinate automatically. A per-tool `max_concurrency`
+caps CPU- or connection-heavy calls. Tools with the same `group` can instead
+declare `read` or `write` access: readers may overlap, while writers are
+exclusive and receive preference once queued.
+
+```python
+from agentflow.lite import (
+    ToolAccessPolicy,
+    ToolRegistry,
+    ToolSharingConfig,
+    tool,
+)
+
+@tool
+def search_index(query: str) -> list[str]:
+    return [query]
+
+@tool
+def rebuild_index() -> str:
+    return "rebuilt"
+
+registry = ToolRegistry(
+    [search_index, rebuild_index],
+    sharing=ToolSharingConfig(
+        policies={
+            "search_index": ToolAccessPolicy(
+                group="index", access="read", max_concurrency=4
+            ),
+            "rebuild_index": ToolAccessPolicy(group="index", access="write"),
+        }
+    ),
+)
+worker_tools = registry.subset(["search_index"])
+assert worker_tools.get("search_index") is search_index
+```
+
+Coordination is synchronous and process-local. Unconfigured tools keep their
+previous unrestricted behavior. Read/write protection covers one complete
+handler invocation, including result serialization. It does not turn a
+sequence of separate tool calls into a transaction: to avoid a check-then-use
+race, keep the check and mutation inside one handler configured with `write`
+access.
+
 ## Agent
 
 `LiteAgent` runs the tool-calling loop: chat → dispatch tool calls → repeat,

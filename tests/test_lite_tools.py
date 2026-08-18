@@ -1,8 +1,19 @@
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-from agentflow.lite import Tool, ToolCall, ToolRegistry, tool
+import pytest
+
+from agentflow.lite import (
+    Tool,
+    ToolAccessPolicy,
+    ToolCall,
+    ToolRegistry,
+    ToolSharingConfig,
+    tool,
+)
 
 
 @tool
@@ -91,3 +102,161 @@ def test_registry_to_openai_tools_structure():
             },
         }
     ]
+
+
+def test_sharing_config_rejects_noop_and_unknown_tool_policies():
+    with pytest.raises(ValueError, match="access or max_concurrency"):
+        ToolAccessPolicy()
+    with pytest.raises(ValueError, match="group requires"):
+        ToolAccessPolicy(group="index", max_concurrency=1)
+
+    sharing = ToolSharingConfig(
+        policies={"missing": ToolAccessPolicy(max_concurrency=1)}
+    )
+    with pytest.raises(ValueError, match="unknown tools: missing"):
+        ToolRegistry([add], sharing=sharing)
+
+    registry = ToolRegistry(
+        [add],
+        sharing={"policies": {"add": {"max_concurrency": 1}}},
+    )
+    assert registry.get("add") is add
+
+
+def test_max_concurrency_is_shared_across_registry_subsets():
+    lock = threading.Lock()
+    release = threading.Event()
+    two_active = threading.Event()
+    active = 0
+    peak = 0
+
+    @tool
+    def expensive(value: int) -> int:
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+            if active == 2:
+                two_active.set()
+        release.wait(timeout=5)
+        with lock:
+            active -= 1
+        return value
+
+    registry = ToolRegistry(
+        [expensive],
+        sharing=ToolSharingConfig(
+            policies={"expensive": ToolAccessPolicy(max_concurrency=2)}
+        ),
+    )
+    subsets = [registry.subset(["expensive"]), registry.subset(["expensive"])]
+
+    try:
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [
+                pool.submit(
+                    subsets[index % 2].dispatch,
+                    ToolCall(id=str(index), name="expensive", arguments={"value": index}),
+                )
+                for index in range(6)
+            ]
+            assert two_active.wait(timeout=5)
+            with lock:
+                assert peak == 2
+            release.set()
+            assert [future.result(timeout=5) for future in futures] == [
+                str(index) for index in range(6)
+            ]
+    finally:
+        release.set()
+
+    assert peak == 2
+
+
+def test_read_write_group_allows_parallel_reads_and_excludes_writes():
+    state_lock = threading.Lock()
+    release_readers = threading.Event()
+    release_writer = threading.Event()
+    readers_ready = threading.Event()
+    writer_entered = threading.Event()
+    late_reader_entered = threading.Event()
+    readers = 0
+    read_calls = 0
+    writer = False
+    violations: list[str] = []
+
+    @tool
+    def read_index() -> str:
+        nonlocal readers, read_calls
+        with state_lock:
+            read_calls += 1
+            readers += 1
+            if writer:
+                violations.append("reader overlapped writer")
+            if readers == 2:
+                readers_ready.set()
+            if read_calls == 3:
+                late_reader_entered.set()
+        release_readers.wait(timeout=5)
+        with state_lock:
+            readers -= 1
+        return "read"
+
+    @tool
+    def write_index() -> str:
+        nonlocal writer
+        with state_lock:
+            if readers or writer:
+                violations.append("writer overlapped another access")
+            writer = True
+        writer_entered.set()
+        release_writer.wait(timeout=5)
+        with state_lock:
+            writer = False
+        return "write"
+
+    registry = ToolRegistry(
+        [read_index, write_index],
+        sharing=ToolSharingConfig(
+            policies={
+                "read_index": ToolAccessPolicy(group="index", access="read"),
+                "write_index": ToolAccessPolicy(group="index", access="write"),
+            }
+        ),
+    )
+    readers_registry = registry.subset(["read_index"])
+    writer_registry = registry.subset(["write_index"])
+
+    try:
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            first_reads = [
+                pool.submit(
+                    readers_registry.dispatch,
+                    ToolCall(id=str(index), name="read_index", arguments={}),
+                )
+                for index in range(2)
+            ]
+            assert readers_ready.wait(timeout=5)
+            write_future = pool.submit(
+                writer_registry.dispatch,
+                ToolCall(id="write", name="write_index", arguments={}),
+            )
+            assert not writer_entered.wait(timeout=0.05)
+
+            release_readers.set()
+            assert writer_entered.wait(timeout=5)
+            late_read = pool.submit(
+                readers_registry.dispatch,
+                ToolCall(id="late", name="read_index", arguments={}),
+            )
+            assert not late_reader_entered.wait(timeout=0.05)
+
+            release_writer.set()
+            assert [future.result(timeout=5) for future in first_reads] == ["read", "read"]
+            assert write_future.result(timeout=5) == "write"
+            assert late_read.result(timeout=5) == "read"
+    finally:
+        release_readers.set()
+        release_writer.set()
+
+    assert violations == []

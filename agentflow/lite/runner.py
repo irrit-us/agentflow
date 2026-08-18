@@ -414,17 +414,17 @@ def make_agent_factory(
         raise ValueError("pass exactly one of `client` or `router`")
 
     def factory(spec: NodeSpec) -> LiteAgent:
-        selected = []
+        tools = None
         if registry is not None and spec.tools:
             for name in spec.tools:
-                item = registry.get(name)
-                if item is None:
+                if registry.get(name) is None:
                     raise ValueError(f"unknown tool '{name}' requested by node '{spec.id}'")
-                selected.append(item)
+            tools = registry.subset(spec.tools)
         if spec.container is not None:
             # Per-node sandbox: the agent can run shell commands in its own container.
-            selected.append(container_shell_tool(DockerExecutor(spec.container)))
-        tools = ToolRegistry(selected) if selected else None
+            if tools is None:
+                tools = ToolRegistry()
+            tools.register(container_shell_tool(DockerExecutor(spec.container)))
         kwargs: dict = {
             "system_prompt": spec.system_prompt,
             "tools": tools,

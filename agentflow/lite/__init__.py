@@ -27,7 +27,13 @@ from agentflow.lite.runner import (
     make_agent_factory,
 )
 from agentflow.lite.server import create_app, make_llm_health_probe
-from agentflow.lite.tools import Tool, ToolRegistry, tool
+from agentflow.lite.tools import (
+    Tool,
+    ToolAccessPolicy,
+    ToolRegistry,
+    ToolSharingConfig,
+    tool,
+)
 from agentflow.lite.types import ChatResult, Message, ToolCall, Usage
 from agentflow.lite.volumes import Mount, ensure_volume
 
@@ -56,8 +62,10 @@ __all__ = [
     "RunEvent",
     "RunState",
     "Tool",
+    "ToolAccessPolicy",
     "ToolCall",
     "ToolRegistry",
+    "ToolSharingConfig",
     "Usage",
     "container_shell_tool",
     "create_app",
