@@ -12,6 +12,22 @@ make test
 
 That shortcut uses the same interpreter resolution as the other repo-local helpers: `.venv/bin/python` when the repo virtualenv exists, otherwise `python3`. Run `make python` when you want to confirm which interpreter those shortcuts will use on your machine.
 
+The standalone Lite suite is fully mocked and does not require network access
+or a Docker daemon:
+
+```bash
+.venv/bin/python -m pytest tests/test_lite_*.py -q
+.venv/bin/python examples/paper_architectures/build_all.py
+```
+
+LLM integration tests use `httpx.MockTransport` as a deterministic pseudo-API
+with fixed requests and responses. They exercise the complete Agent-to-tool
+wire round trip without contacting a real model. Docker subprocesses are
+monkeypatched, and the paper-architecture command builds and validates all 47
+graphs without running them. The Lite suite also guards required/nullable tool
+schemas, router profile identity, interrupted fan-out recovery, monitor method
+restrictions, manifest fidelity, and the package-wide future-annotations rule.
+
 ## Graph Optimization Verification
 
 For maintainer checks of graph optimization rounds, run the focused tests using the repo virtualenv when available:

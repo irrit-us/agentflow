@@ -31,6 +31,12 @@ print(result.message.content, result.usage.total_tokens)
 `ToolRegistry.dispatch` runs handlers and reports failures as `"Error: ..."`
 strings instead of raising.
 
+Schema requiredness follows the Python signature: an argument without a
+default is required even when its annotation allows `None`. Nullable types are
+advertised explicitly, for example `str | None` becomes
+`{"type": ["string", "null"]}`. A default value controls whether callers may
+omit the argument.
+
 ```python
 from agentflow.lite import ToolRegistry, ToolCall, tool
 
@@ -131,6 +137,9 @@ result = router.chat("fast", [Message(role="user", content="ping")])
 ```
 
 Pass `router=router, role="fast"` to `LiteAgent` instead of `client`/`model`.
+Profile names must be unique across every role and fallback chain in one
+router. This prevents a cached client for one endpoint or tenant header set
+from being reused by a different profile with the same name.
 
 ## Container execution
 
@@ -243,8 +252,12 @@ state = runner.run()
 
 The state file belongs to one runner process. Resume rejects a state file if
 the graph definition changed, preventing results from a different workflow
-from being silently reused. See `examples/lite_dynamic_audit.yaml` for a
-planner-to-link-audit-to-review pipeline.
+from being silently reused. Runtime fan-out is reconciled against the persisted
+source items: missing children from an interrupted expansion are restored,
+while unexpected children or changed child specifications fail the parent
+instead of producing a partial aggregate. See
+`examples/lite_dynamic_audit.yaml` for a planner-to-link-audit-to-review
+pipeline.
 
 ## Monitor
 
@@ -267,8 +280,8 @@ uvicorn.run(app, host="127.0.0.1", port=8600)
 The UI polls these endpoints, draws the DAG with draggable nodes (layout
 persisted in localStorage), a blocked-task sidebar, and a per-node inspect
 drawer with the full conversation. The HTTP API is intentionally read-only
-(GET/HEAD only); it serves monitoring only, and mutations are rejected with
-405.
+(GET/HEAD only); it serves monitoring only, and every other method, including
+`OPTIONS`, is rejected with 405.
 
 ## Examples
 
