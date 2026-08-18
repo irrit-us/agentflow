@@ -8,6 +8,12 @@
 > Target: make the paper architectures enforce their claims instead of merely
 > describing them in prompts.
 
+Implementation progress: Phase 0 is implemented by
+`examples/paper_architectures/manifest.json`, the lite fidelity schema, the
+capability report in `build_all.py`, and corpus/adapter tests. Phases 1-5 remain
+planned work; the manifest intentionally reports the current gaps rather than
+claiming those runtime semantics now exist.
+
 ## Scope and method
 
 This roadmap compares the architecture and engineering recommendations in

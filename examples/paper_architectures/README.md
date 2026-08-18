@@ -1,6 +1,18 @@
 # paper_architectures: containerized graph declarations of Agent security architectures from the papers
 
-Containerized graph declarations (in `agentflow.lite` format) for the Agent security architectures of all downloaded papers. **Graphs are built, not run** — by default they are only loaded/validated/printed; execution happens only with `--run`.
+Containerized graph declarations (in `agentflow.lite` format) for the Agent security architectures of all downloaded papers. **Graphs are built, not run** — by default they are only loaded, validated, and printed. `--run` executes only entries that the fidelity manifest marks `runnable`; it skips `mock-runnable` and `spec-only` entries.
+
+## Fidelity manifest
+
+[`manifest.json`](manifest.json) records every graph's source, domain, fidelity, runtime readiness, required tools/images/licenses/devices, and exact non-runnable reasons. Its capability matrix distinguishes:
+
+- `E` — enforced by a concrete lite runtime adapter;
+- `P` — described in a prompt but not enforced;
+- `-` — not required by that architecture declaration.
+
+The tracked capabilities are real feedback, deterministic oracle, human approval, failure policy, stateful target, evidence contract, and sandboxing. `E` for sandbox means that the declared command runs through the existing container executor; it does not claim the non-bypassable policy ceiling planned in Phase 3. Manifest validation fails when the YAML corpus and manifest differ, declared images drift, or an entry claims an enforced capability for which lite has no adapter.
+
+No current graph is marked fully runnable. The manifest identifies 45 as `spec-only` and 2 as `mock-runnable`; this is intentional architecture-fidelity reporting, not a graph build failure.
 
 ## Directory index (47 graphs, grouped by source document)
 
@@ -83,7 +95,7 @@ Containerized graph declarations (in `agentflow.lite` format) for the Agent secu
 # node-to-image mapping, without executing anything
 python examples/paper_architectures/build_all.py
 
-# Execute: requires Docker Desktop + LITE_BASE_URL pointing at a real LLM endpoint
+# Execute only entries marked runnable (currently none)
 LITE_BASE_URL=http://localhost:8000/v1 python examples/paper_architectures/build_all.py --run
 ```
 
@@ -91,10 +103,10 @@ For the monitor UI (node status, blocked list, per-node conversation inspect), s
 
 ## Image notes
 
-- **Public images** (public section of `_containers.py`) can be pulled directly: `python:3.12-slim`, `semgrep/semgrep`, `trailofbits/eth-security-toolbox` (slither), `ghcr.io/foundry-rs/foundry`, `aflplusplus/aflplusplus`, `radare/radare2`, `mcr.microsoft.com/playwright/python`, `node:22-slim`.
-- **`agentflow-tools/*`** (firmware-qemu, re-ghidra, codeql, tamarin) must be built locally; they are currently placeholder declarations. Graphs referencing them require building these images before `--run`.
+- **Public images** (public section of `_containers.py`) can be pulled directly: `python:3.12-slim`, `semgrep/semgrep`, `trailofbits/eth-security-toolbox` (slither), `ghcr.io/foundry-rs/foundry`, `aflplusplus/aflplusplus`, `radare/radare2`, `mcr.microsoft.com/playwright/python`, `node:22-slim`. Most declarations still use mutable `latest` tags, so pullability is not treated as a reproducible execution identity.
+- **`agentflow-tools/*`** (firmware-qemu, re-ghidra, codeql, tamarin) must be built locally; they are currently placeholder declarations. Building them is one prerequisite before the affected manifest entries can be reviewed and promoted to `runnable`.
 
 ## Conventions
 
-- **Feedback loops are collapsed into single nodes**: the papers' "execute-verify-retry" cycles appear as single nodes (e.g. `poc-verify-loop`); the iteration is carried by LiteAgent's `max_iterations`, not unrolled into graph edges.
+- **Feedback loops are collapsed into single nodes**: the papers' "execute-verify-retry" cycles appear as single nodes (e.g. `poc-verify-loop`). LiteAgent's `max_iterations` bounds tool calls but does not implement typed verifier feedback, semantic stopping, or a successful completion gate; the manifest therefore marks these claims prompt-only.
 - **Mount conventions**: inputs are bind-mounted read-only (`type=bind, read_only=true`); data transfer between containers uses named volumes mounted rw (`type=volume`, same volume name shared across nodes); tmpfs is used only for scratch space — tmpfs contents are destroyed with the container, and loading a graph containing tmpfs emits the framework's `UserWarning`, which is expected.
