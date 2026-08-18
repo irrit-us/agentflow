@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from agentflow.lite.client import LiteLLMClient
 from agentflow.lite.runner import GraphRunner
 
-_ALLOWED_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_ALLOWED_METHODS = frozenset({"GET", "HEAD"})
 
 
 def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = None) -> FastAPI:
@@ -20,7 +20,7 @@ def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = No
 
     @app.middleware("http")
     async def read_only_guard(request, call_next):
-        # Monitor only, read-only by design: reject every non-GET/HEAD/OPTIONS method.
+        # Monitor only, read-only by design: reject every non-GET/HEAD method.
         if request.method not in _ALLOWED_METHODS:
             return JSONResponse({"detail": "monitor API is read-only"}, status_code=405)
         return await call_next(request)

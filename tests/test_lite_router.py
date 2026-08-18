@@ -78,6 +78,30 @@ def test_client_is_cached_per_profile():
     assert "primary" in router._clients
 
 
+def test_router_rejects_duplicate_profile_names_before_clients_can_cross_routes():
+    profiles = {
+        "first": [
+            ModelProfile(
+                name="shared",
+                model="m1",
+                base_url="http://first/v1",
+                headers={"X-Tenant": "first"},
+            )
+        ],
+        "second": [
+            ModelProfile(
+                name="shared",
+                model="m2",
+                base_url="http://second/v1",
+                headers={"X-Tenant": "second"},
+            )
+        ],
+    }
+
+    with pytest.raises(ValueError, match="duplicate model profile names: shared"):
+        ModelRouter(profiles)
+
+
 def test_profile_defaults_merge_and_explicit_kwargs_win():
     seen_bodies: list[dict] = []
     import json

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from agentflow.lite.agent import AgentResult, BudgetExceededError, LiteAgent
 from agentflow.lite.client import LiteLLMClient, LLMError
 from agentflow.lite.container import (

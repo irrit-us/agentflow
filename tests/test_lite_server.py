@@ -218,7 +218,7 @@ class TestReadOnlyGuard:
     def test_mutating_methods_get_405(self):
         client = TestClient(create_app(_finished_runner()))
 
-        for method in ("post", "put", "delete"):
+        for method in ("options", "post", "put", "delete"):
             for path in ("/api/state", "/api/nodes/a/inspect", "/api/health", "/api/blocked"):
                 response = getattr(client, method)(path)
                 assert response.status_code == 405, (method, path)
@@ -238,4 +238,4 @@ class TestReadOnlyGuard:
             path = getattr(route, "path", "")
             methods = getattr(route, "methods", None)
             if path.startswith("/api/") and methods is not None:
-                assert methods <= {"GET", "HEAD", "OPTIONS"}, (path, methods)
+                assert methods <= {"GET", "HEAD"}, (path, methods)

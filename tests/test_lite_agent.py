@@ -90,6 +90,63 @@ def test_run_two_round_tool_loop_message_sequence():
     assert wire["tool_calls"][0]["function"]["arguments"] == '{"a": 2, "b": 3}'
 
 
+def test_fixed_pseudo_api_exercises_agent_tool_wire_round_trip():
+    requests: list[dict] = []
+    responses = [
+        _response(
+            None,
+            tool_calls=[
+                {
+                    "id": "call-add",
+                    "type": "function",
+                    "function": {"name": "add", "arguments": '{"a": 7, "b": 5}'},
+                }
+            ],
+            usage={"prompt_tokens": 10, "completion_tokens": 3, "total_tokens": 13},
+        ),
+        _response(
+            "The fixed sum is 12.",
+            usage={"prompt_tokens": 15, "completion_tokens": 5, "total_tokens": 20},
+        ),
+    ]
+
+    def pseudo_api(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=responses[len(requests) - 1])
+
+    @tool
+    def add(a: int, b: int) -> int:
+        """Add two integers."""
+
+        return a + b
+
+    with LiteLLMClient(
+        base_url="http://pseudo-api/v1",
+        transport=httpx.MockTransport(pseudo_api),
+        max_retries=0,
+    ) as client:
+        agent = LiteAgent(
+            client=client,
+            model="pseudo-model",
+            system_prompt="Use tools for arithmetic.",
+            tools=[add],
+        )
+
+        result = agent.run("What is 7 + 5?")
+
+    assert len(requests) == 2
+    assert requests[0]["model"] == "pseudo-model"
+    assert requests[0]["tools"][0]["function"]["name"] == "add"
+    assert requests[1]["messages"][-1] == {
+        "role": "tool",
+        "content": "12",
+        "tool_call_id": "call-add",
+    }
+    assert result.text == "The fixed sum is 12."
+    assert result.iterations == 2
+    assert result.usage.total_tokens == 33
+
+
 def test_run_stops_at_max_iterations():
     tool_call = {
         "id": "call_1",

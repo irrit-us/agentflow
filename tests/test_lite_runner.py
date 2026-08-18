@@ -10,6 +10,7 @@ from agentflow.lite import (
     GraphRunner,
     GraphSpec,
     LiteLLMClient,
+    NodeRun,
     NodeSpec,
     Usage,
     make_agent_factory,
@@ -435,6 +436,61 @@ def test_resume_requeues_an_interrupted_node(tmp_path):
     after = resumed.run().snapshot()["nodes"]["work"]
     assert after.status == "finished"
     assert after.attempts == 2
+
+
+def test_resume_reconciles_partially_persisted_fanout(tmp_path):
+    state_path = tmp_path / "interrupted-fanout.json"
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="plan", prompt="plan"),
+            NodeSpec(
+                id="audit",
+                prompt="audit {{ item }}",
+                fanout=FanOutSpec(from_="plan"),
+            ),
+        ]
+    )
+    factory = make_agent_factory(client=_echo_client(), default_model="m")
+    interrupted = GraphRunner(graph, factory, state_path=state_path)
+    interrupted.state.set_result(
+        "plan",
+        AgentResult(text="[1,2,3]", messages=[], usage=Usage(), iterations=1),
+    )
+    interrupted.state.set_status("plan", "finished")
+
+    parent = graph.nodes[1]
+    first_child = parent.model_copy(
+        update={
+            "id": "audit--0001",
+            "prompt": "audit 1",
+            "depends_on": ["plan"],
+            "fanout": None,
+        },
+        deep=True,
+    )
+    interrupted.state.add_node(
+        NodeRun(spec=first_child, fanout_parent="audit", fanout_item=1)
+    )
+    interrupted.state.set_status(
+        "audit", "processing", detail="interrupted after one child"
+    )
+
+    resumed = GraphRunner(graph, factory, state_path=state_path, resume=True)
+    nodes = resumed.run().snapshot()["nodes"]
+
+    children = sorted(
+        (nrun for nrun in nodes.values() if nrun.fanout_parent == "audit"),
+        key=lambda nrun: nrun.spec.id,
+    )
+    assert [child.spec.id for child in children] == [
+        "audit--0001",
+        "audit--0002",
+        "audit--0003",
+    ]
+    assert [child.fanout_item for child in children] == [1, 2, 3]
+    aggregate = json.loads(nodes["audit"].result.text)
+    assert [entry["item"] for entry in aggregate] == [1, 2, 3]
+    assert resumed.is_done() is True
 
 
 def test_node_retries_transient_failure_up_to_max_attempts():

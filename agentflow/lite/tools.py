@@ -21,11 +21,14 @@ def _is_optional(annotation: Any) -> bool:
     return False
 
 
-def _schema_type(annotation: Any) -> str:
+def _schema_type(annotation: Any) -> str | list[str]:
     if _is_optional(annotation):
         args = [a for a in typing.get_args(annotation) if a is not type(None)]
         if len(args) == 1:
-            return _schema_type(args[0])
+            inner_type = _schema_type(args[0])
+            if isinstance(inner_type, list):
+                return [*inner_type, "null"]
+            return [inner_type, "null"]
     if annotation in _JSON_TYPES:
         return _JSON_TYPES[annotation]
     return "string"
@@ -56,8 +59,7 @@ class Tool(BaseModel):
             annotation = hints.get(param_name, str)
             properties[param_name] = {"type": _schema_type(annotation)}
             if param.default is inspect.Parameter.empty:
-                if not _is_optional(annotation):
-                    required.append(param_name)
+                required.append(param_name)
         doc = inspect.getdoc(fn) or ""
         return cls(
             name=name or fn.__name__,

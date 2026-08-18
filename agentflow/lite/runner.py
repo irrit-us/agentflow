@@ -260,16 +260,9 @@ class GraphRunner:
         return [nrun for nrun in snapshot.values() if nrun.fanout_parent == parent_id]
 
     def _expand_fanout(self, node_id: str, nrun: NodeRun) -> None:
-        existing = self._children(node_id, self.state.snapshot()["nodes"])
-        if existing:
-            self.state.set_status(
-                node_id,
-                "processing",
-                detail=f"resumed {len(existing)} fanout task(s)",
-            )
-            return
         items = fanout_items(nrun.spec, self.state.results())
         dependencies = self.graph.dependencies(node_id)
+        expected: list[tuple[str, Any, NodeSpec]] = []
         for index, item in enumerate(items, start=1):
             child_id = f"{node_id}--{index:04d}"
             child_spec = nrun.spec.model_copy(
@@ -281,13 +274,48 @@ class GraphRunner:
                 },
                 deep=True,
             )
+            expected.append((child_id, item, child_spec))
+
+        existing = {
+            child.spec.id: child
+            for child in self._children(node_id, self.state.snapshot()["nodes"])
+        }
+        expected_ids = {child_id for child_id, _, _ in expected}
+        unexpected = sorted(set(existing) - expected_ids)
+        if unexpected:
+            raise ValueError(
+                f"fanout node '{node_id}' has unexpected persisted tasks: "
+                + ", ".join(unexpected)
+            )
+        for child_id, item, child_spec in expected:
+            child = existing.get(child_id)
+            if child is not None and (
+                child.fanout_item != item or child.spec != child_spec
+            ):
+                raise ValueError(
+                    f"fanout task '{child_id}' does not match its persisted source item"
+                )
+
+        created = 0
+        for child_id, item, child_spec in expected:
+            if child_id in existing:
+                continue
             self.state.add_node(
                 NodeRun(spec=child_spec, fanout_parent=node_id, fanout_item=item)
             )
+            created += 1
+
+        if existing:
+            detail = (
+                f"resumed {len(existing)} fanout task(s); "
+                f"restored {created} missing task(s)"
+            )
+        else:
+            detail = f"expanded {len(items)} fanout task(s)"
         self.state.set_status(
             node_id,
             "processing",
-            detail=f"expanded {len(items)} fanout task(s)",
+            detail=detail,
         )
         if not items:
             self.state.set_result(node_id, self._aggregate_fanout([]))

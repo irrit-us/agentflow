@@ -31,6 +31,10 @@ def _stats(total: float, active: bool, label: Optional[str] = None) -> dict:
     return {"total": total, "active": active, "label": label}
 
 
+def _required_nullable(label: Optional[str]) -> Optional[str]:
+    return label
+
+
 def test_tool_decorator_derives_schema_from_annotations():
     assert add.name == "add"
     assert add.description == "Add two integers."
@@ -57,9 +61,21 @@ def test_tool_from_function_maps_scalar_types_and_optional():
     assert item.parameters["properties"] == {
         "total": {"type": "number"},
         "active": {"type": "boolean"},
-        "label": {"type": "string"},
+        "label": {"type": ["string", "null"]},
     }
     assert item.parameters["required"] == ["total", "active"]
+
+
+def test_tool_schema_keeps_nullable_parameter_required_without_default():
+    item = Tool.from_function(_required_nullable)
+
+    assert item.parameters["properties"] == {
+        "label": {"type": ["string", "null"]}
+    }
+    assert item.parameters["required"] == ["label"]
+    assert ToolRegistry([item]).dispatch(
+        ToolCall(id="nullable", name="_required_nullable", arguments={"label": None})
+    ) == "null"
 
 
 def test_registry_dispatch_returns_json_for_non_string_results():

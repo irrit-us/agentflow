@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections import Counter
+
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,7 +24,17 @@ class ModelProfile(BaseModel):
 class ModelRouter:
     """Routes chat calls to role-based fallback chains of model profiles."""
 
-    def __init__(self, roles: dict[str, list[ModelProfile]], transport: httpx.BaseTransport | None = None):
+    def __init__(
+        self,
+        roles: dict[str, list[ModelProfile]],
+        transport: httpx.BaseTransport | None = None,
+    ):
+        profile_names = [profile.name for chain in roles.values() for profile in chain]
+        duplicates = sorted(
+            name for name, count in Counter(profile_names).items() if count > 1
+        )
+        if duplicates:
+            raise ValueError("duplicate model profile names: " + ", ".join(duplicates))
         self.roles = roles
         self._transport = transport
         self._clients: dict[str, LiteLLMClient] = {}
