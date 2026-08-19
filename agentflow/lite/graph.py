@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agentflow.lite.agent import AgentResult
 from agentflow.lite.container import ContainerConfig
@@ -33,6 +33,32 @@ class FanOutSpec(BaseModel):
     max_items: int | None = Field(default=None, ge=1)
 
 
+class NestedConcurrencySpec(BaseModel):
+    """Concurrency policy enforced inside a nested worker runtime."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max_concurrent_requests: int = Field(ge=1)
+    pools: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("pools")
+    @classmethod
+    def validate_pools(cls, pools: dict[str, int]) -> dict[str, int]:
+        invalid_names = sorted(name for name in pools if not name.strip())
+        if invalid_names:
+            raise ValueError("nested concurrency pool names must not be empty")
+        invalid_limits = sorted(name for name, limit in pools.items() if limit < 1)
+        if invalid_limits:
+            raise ValueError(
+                "nested concurrency pool limits must be positive: "
+                + ", ".join(invalid_limits)
+            )
+        return pools
+
+    def pool_limit(self, name: str, default: int) -> int:
+        return self.pools.get(name, default)
+
+
 class NodeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -50,6 +76,7 @@ class NodeSpec(BaseModel):
     resource: str = Field(default="default", min_length=1)
     priority: int = 0
     max_attempts: int = Field(default=1, ge=1)
+    nested_concurrency: NestedConcurrencySpec | None = None
 
 
 class GraphSpec(BaseModel):

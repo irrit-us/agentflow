@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from agentflow.lite.concurrency import SharedConcurrencyBudget
 from agentflow.lite.types import ChatResult, Message, ToolCall, Usage
 
 _ERROR_BODY_LIMIT = 500
@@ -38,6 +39,7 @@ class LiteLLMClient:
         timeout: float = 120,
         max_retries: int = 3,
         transport: httpx.BaseTransport | None = None,
+        request_budget: SharedConcurrencyBudget | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         if api_key is None and api_key_env is not None:
@@ -46,6 +48,7 @@ class LiteLLMClient:
         self.default_headers = dict(default_headers or {})
         self.timeout = timeout
         self.max_retries = max_retries
+        self.request_budget = request_budget
         self._client = httpx.Client(transport=transport, timeout=timeout)
 
     def close(self) -> None:
@@ -94,7 +97,11 @@ class LiteLLMClient:
         last_error: LLMError | None = None
         for attempt in range(max(self.max_retries, 0) + 1):
             try:
-                response = self._client.post(url, json=payload, headers=self._headers())
+                if self.request_budget is None:
+                    response = self._client.post(url, json=payload, headers=self._headers())
+                else:
+                    with self.request_budget.hold():
+                        response = self._client.post(url, json=payload, headers=self._headers())
             except httpx.HTTPError as exc:
                 last_error = LLMError(f"HTTP request failed: {exc}")
                 if attempt < self.max_retries:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from agentflow.lite.agent import AgentResult, BudgetExceededError, LiteAgent
 from agentflow.lite.client import LiteLLMClient, LLMError
+from agentflow.lite.concurrency import ConcurrencySnapshot, SharedConcurrencyBudget
 from agentflow.lite.container import (
     ContainerConfig,
     ContainerError,
@@ -27,6 +28,7 @@ from agentflow.lite.graph import (
     EdgeSpec,
     FanOutSpec,
     GraphSpec,
+    NestedConcurrencySpec,
     NodeSpec,
     fanout_items,
     load_graph,
@@ -62,6 +64,7 @@ __all__ = [
     "CapabilityState",
     "ContainerConfig",
     "ContainerError",
+    "ConcurrencySnapshot",
     "DockerExecutor",
     "EdgeSpec",
     "ExecResult",
@@ -78,6 +81,7 @@ __all__ = [
     "Mount",
     "NodeRun",
     "NodeSpec",
+    "NestedConcurrencySpec",
     "NodeStatus",
     "PaperArchitectureEntry",
     "PaperArchitectureManifest",
@@ -90,6 +94,7 @@ __all__ = [
     "ToolCall",
     "ToolRegistry",
     "ToolSharingConfig",
+    "SharedConcurrencyBudget",
     "Usage",
     "ArchitectureRequirements",
     "container_shell_tool",

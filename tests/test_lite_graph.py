@@ -7,6 +7,7 @@ import pytest
 from agentflow.lite import (
     AgentResult,
     GraphSpec,
+    NestedConcurrencySpec,
     Usage,
     fanout_items,
     load_graph,
@@ -212,6 +213,35 @@ def test_node_without_container_defaults_to_none():
     node = NodeSpec(id="a", prompt="x")
 
     assert node.container is None
+
+
+def test_nested_concurrency_policy_loads_and_rejects_invalid_limits(tmp_path):
+    path = tmp_path / "nested.yaml"
+    path.write_text(
+        """
+nodes:
+  - id: train
+    prompt: train
+    nested_concurrency:
+      max_concurrent_requests: 20
+      pools:
+        merge: 20
+        retro_link: 4
+""",
+        encoding="utf-8",
+    )
+
+    policy = load_graph(path).nodes[0].nested_concurrency
+    assert policy == NestedConcurrencySpec(
+        max_concurrent_requests=20,
+        pools={"merge": 20, "retro_link": 4},
+    )
+    assert policy.pool_limit("missing", 3) == 3
+
+    with pytest.raises(ValueError):
+        NestedConcurrencySpec(max_concurrent_requests=0)
+    with pytest.raises(ValueError):
+        NestedConcurrencySpec(max_concurrent_requests=1, pools={"retro_link": 0})
 
 
 def test_fanout_adds_implicit_dependency_and_extracts_nested_items():
