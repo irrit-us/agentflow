@@ -1,4 +1,6 @@
-"""Lite agent demo: direct LLM call with function calling, no orchestrator.
+from __future__ import annotations
+
+__doc__ = """Lite agent demo: direct LLM call with a safe local skill, no orchestrator.
 
 Runs a small code-Q&A task against any OpenAI-compatible endpoint using the
 standalone ``agentflow.lite`` subpackage.
@@ -15,58 +17,63 @@ at it -- no API key is required when the server does not enforce auth:
     python examples/lite_agent_demo.py
 """
 
-from __future__ import annotations
-
 import os
-from pathlib import Path
 
-from agentflow.lite import LiteAgent, LiteLLMClient, tool
+from agentflow.lite import (
+    LiteAgent,
+    LiteLLMClient,
+    SharedConcurrencyBudget,
+    SkillRegistry,
+    ToolSharingConfig,
+)
 
-ROOT = Path(__file__).resolve().parent.parent
-
-
-@tool
-def read_file(path: str) -> str:
-    """Read a text file inside the repository and return its contents."""
-    target = (ROOT / path).resolve()
-    if not str(target).startswith(str(ROOT)):
-        return "Error: path escapes the repository"
-    return target.read_text(encoding="utf-8")
-
-
-@tool
-def grep_code(pattern: str, path: str = "agentflow") -> str:
-    """Find lines containing ``pattern`` in Python files under ``path``."""
-    base = (ROOT / path).resolve()
-    if not str(base).startswith(str(ROOT)):
-        return "Error: path escapes the repository"
-    hits: list[str] = []
-    for file in sorted(base.rglob("*.py")):
-        for lineno, line in enumerate(file.read_text(encoding="utf-8").splitlines(), 1):
-            if pattern in line:
-                hits.append(f"{file.relative_to(ROOT)}:{lineno}: {line.strip()}")
-    return "\n".join(hits[:50]) or "no matches"
+if __package__:
+    from .lite_repository_skill import (
+        repository_skill,
+        repository_tool_policies,
+    )
+else:
+    from lite_repository_skill import repository_skill, repository_tool_policies
 
 
 def main() -> None:
+    base_url = os.environ.get("LITE_BASE_URL", "https://api.openai.com/v1")
+    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LITE_API_KEY")
+    if base_url == "https://api.openai.com/v1" and not api_key:
+        raise SystemExit(
+            "OPENAI_API_KEY is required for the default endpoint; set "
+            "LITE_BASE_URL to use an explicitly configured local endpoint."
+        )
+    skills = SkillRegistry(
+        [repository_skill()],
+        tool_sharing=ToolSharingConfig(policies=repository_tool_policies()),
+    )
     client = LiteLLMClient(
-        base_url=os.environ.get("LITE_BASE_URL", "https://api.openai.com/v1"),
-        api_key=os.environ.get("OPENAI_API_KEY"),
-        api_key_env="LITE_API_KEY",
+        base_url=base_url,
+        api_key=api_key,
+        timeout=30,
+        max_retries=1,
+        request_budget=SharedConcurrencyBudget(capacity=2),
     )
-    agent = LiteAgent(
-        client=client,
-        model=os.environ.get("LITE_MODEL", "gpt-4o-mini"),
-        system_prompt=(
-            "You are a code assistant for this repository. "
-            "Use the provided tools to inspect code before answering."
-        ),
-        tools=[read_file, grep_code],
-        max_iterations=8,
-    )
-    result = agent.run("Where is the pipeline DAG executed? Name the module and the key class.")
-    print(result.text)
-    print(f"\n(iterations={result.iterations}, total_tokens={result.usage.total_tokens})")
+    try:
+        agent = LiteAgent(
+            client=client,
+            model=os.environ.get("LITE_MODEL", "gpt-4o-mini"),
+            system_prompt="You are a concise code assistant for this repository.",
+            skills=skills,
+            max_iterations=6,
+            max_total_tokens=6000,
+        )
+        result = agent.run(
+            "Where is the lite pipeline DAG executed? Name the module and key class."
+        )
+        print(result.text)
+        print(
+            f"\n(iterations={result.iterations}, "
+            f"total_tokens={result.usage.total_tokens})"
+        )
+    finally:
+        client.close()
 
 
 if __name__ == "__main__":

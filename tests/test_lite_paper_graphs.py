@@ -81,7 +81,15 @@ def test_dynamic_audit_example_loads_with_fanout():
     audit = next(node for node in graph.nodes if node.id == "audit-link")
     assert audit.fanout is not None
     assert audit.fanout.items_path == "links"
-    assert audit.resource == "forge"
+    assert audit.fanout.max_items == 16
+    assert audit.trigger_mode == "input_and_output"
+    assert audit.skills == ["repository-read", "security-guidance"]
+    assert [(item.name, item.access) for item in audit.resources] == [
+        ("model-endpoint", "read"),
+        ("guidance-catalog", "read"),
+        ("repository", "read"),
+    ]
+    assert graph.resource_settings["repository"].max_concurrency == 4
 
 
 def test_paper_manifest_matches_discovered_yaml_corpus():

@@ -312,8 +312,14 @@ drawer with the full conversation. The HTTP API is intentionally read-only
 
 ## Examples
 
-- `examples/lite_agent_demo.py` — single agent with file tools
+- `examples/lite_agent_demo.py` — single live agent with a bounded, read-only
+  repository skill and shared Tool concurrency limits
 - `examples/lite_container_demo.py` — tool calls sandboxed in Docker
 - `examples/lite_volumes_demo.py` — bind/volume mounts for RAG and data transfer
-- `examples/lite_pipeline_demo.py` — YAML graph + monitor server
+- `examples/lite_pipeline_demo.py` — offline-by-default feature walkthrough;
+  add `--monitor` for the read-only UI or `--live` for a configured endpoint
+- `examples/lite_pipeline.yaml` — all trigger modes, atomic multi-resource
+  leases, independent local/MCP skills, and an exclusive report publication
+- `examples/lite_dynamic_audit.yaml` — bounded runtime fan-out with the same
+  trigger, skill, and resource coordination patterns
 - `examples/paper_architectures/` — 47 paper architecture graphs (build-only scaffold)

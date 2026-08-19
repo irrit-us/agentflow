@@ -4,6 +4,13 @@ These recommendations apply to `agentflow.lite` graphs and Agent adapters. They
 focus on preserving data boundaries, preventing shared-state races, applying
 backpressure deliberately, and keeping skills independently selectable.
 
+The runnable `examples/lite_pipeline_demo.py` applies these recommendations in
+one offline-by-default graph. Its YAML shows all three trigger modes and
+read/write resource leases; its Python setup shows bounded repository Tools,
+shared Tool policies, independent local skills, and a namespaced in-process MCP
+provider. The deterministic model transport makes the example safe to run in
+tests without network access.
+
 ## Pass one validated input unit to every Agent node
 
 Treat `NodeInput` as the boundary between the graph runtime and an Agent. It

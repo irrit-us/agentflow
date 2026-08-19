@@ -2,6 +2,15 @@
 # scan → analyze is declared with explicit edges; report uses depends_on
 # (the two styles are equivalent).
 name: lite-audit
+resource_settings:
+  model-endpoint:
+    max_concurrency: 2
+  repository:
+    max_concurrency: 4
+  guidance-catalog:
+    max_concurrency: 2
+  report-output:
+    max_concurrency: 1
 nodes:
   - id: scan
     prompt: |
@@ -9,7 +18,15 @@ nodes:
       calls (e.g. subprocess, eval, exec, pickle.loads). List each finding with
       its file and line number. If nothing is found, reply "NONE".
     system_prompt: You are a security auditor. Perform read-only analysis only, and cite evidence locations for every conclusion.
-    max_iterations: 8
+    skills: [repository-read]
+    trigger_mode: output_idle
+    resources:
+      - name: model-endpoint
+        access: read
+      - name: repository
+        access: read
+    max_iterations: 5
+    max_total_tokens: 6000
   - id: analyze
     prompt: |
       Below are the scan results:
@@ -18,7 +35,15 @@ nodes:
 
       For each item, judge whether it is a genuinely exploitable risk,
       rank them by severity, and explain your reasoning.
-    max_iterations: 6
+    skills: [security-guidance]
+    trigger_mode: input_and_output
+    resources:
+      - name: model-endpoint
+        access: read
+      - name: guidance-catalog
+        access: read
+    max_iterations: 4
+    max_total_tokens: 6000
   - id: report
     prompt: |
       Based on the analysis below, produce an audit report containing a
@@ -27,7 +52,17 @@ nodes:
       {{ nodes.analyze.text }}
     depends_on:
       - analyze
-    max_total_tokens: 20000
+    skills: [report-publishing]
+    trigger_mode: input_ready
+    resources:
+      - name: model-endpoint
+        access: read
+      # Exclusive for the full node invocation. The example's Tool also uses
+      # a write policy for its single in-memory publication handler call.
+      - name: report-output
+        access: write
+    max_iterations: 4
+    max_total_tokens: 6000
 edges:
   - from: scan
     to: analyze
