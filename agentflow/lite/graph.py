@@ -3,16 +3,19 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agentflow.lite.agent import AgentResult
+from agentflow.lite.concurrency import ExternalResourceSettings, ResourceRequest
 from agentflow.lite.container import ContainerConfig
 
 _PROMPT_REF = re.compile(r"\{\{\s*nodes\.([A-Za-z0-9_\-]+)\.text\s*\}\}")
 _ITEM_VAR = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+NodeTriggerMode = Literal["input_ready", "output_idle", "input_and_output"]
 
 
 class EdgeSpec(BaseModel):
@@ -68,15 +71,46 @@ class NodeSpec(BaseModel):
     role: str | None = None
     model: str | None = None
     tools: list[str] = Field(default_factory=list)
+    skills: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
     max_iterations: int | None = None
     max_total_tokens: int | None = None
     container: ContainerConfig | None = None
     fanout: FanOutSpec | None = None
     resource: str = Field(default="default", min_length=1)
+    resources: list[ResourceRequest] = Field(default_factory=list)
+    trigger_mode: NodeTriggerMode = "input_ready"
     priority: int = 0
     max_attempts: int = Field(default=1, ge=1)
     nested_concurrency: NestedConcurrencySpec | None = None
+
+    @field_validator("resource")
+    @classmethod
+    def validate_resource(cls, resource: str) -> str:
+        if not resource.strip():
+            raise ValueError("resource name must not be blank")
+        return resource
+
+    @model_validator(mode="after")
+    def validate_resource_requests(self) -> NodeSpec:
+        seen: dict[str, str] = {}
+        for request in self.resources:
+            previous = seen.get(request.name)
+            if previous is not None:
+                if previous != request.access:
+                    raise ValueError(
+                        f"resource '{request.name}' has conflicting access modes"
+                    )
+                raise ValueError(f"resource '{request.name}' is requested more than once")
+            seen[request.name] = request.access
+        return self
+
+    def resource_requests(self) -> list[ResourceRequest]:
+        """Return explicit requests or the legacy single resource request."""
+
+        if self.resources:
+            return list(self.resources)
+        return [ResourceRequest(name=self.resource)]
 
 
 class GraphSpec(BaseModel):
@@ -85,6 +119,16 @@ class GraphSpec(BaseModel):
     name: str = "pipeline"
     nodes: list[NodeSpec]
     edges: list[EdgeSpec] = Field(default_factory=list)
+    resource_settings: dict[str, ExternalResourceSettings] = Field(default_factory=dict)
+
+    @field_validator("resource_settings")
+    @classmethod
+    def validate_resource_settings(
+        cls, settings: dict[str, ExternalResourceSettings]
+    ) -> dict[str, ExternalResourceSettings]:
+        if any(not name.strip() for name in settings):
+            raise ValueError("external resource names must not be blank")
+        return settings
 
     def all_edges(self) -> list[tuple[str, str]]:
         seen: set[tuple[str, str]] = set()
@@ -126,6 +170,16 @@ class GraphSpec(BaseModel):
         )
         if invalid_vars:
             raise ValueError(f"fanout item_var is invalid for nodes: {', '.join(invalid_vars)}")
+        invalid_output_triggers = sorted(
+            node.id
+            for node in self.nodes
+            if node.trigger_mode == "output_idle" and self.dependencies(node.id)
+        )
+        if invalid_output_triggers:
+            raise ValueError(
+                "output_idle nodes cannot declare input dependencies: "
+                + ", ".join(invalid_output_triggers)
+            )
         self.topo_order()  # raises on cycles
 
     def topo_order(self) -> list[str]:

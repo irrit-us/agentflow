@@ -2,7 +2,7 @@
 
 > Status: rough implementation plan, not a release commitment
 >
-> Review date: 2026-08-18
+> Review date: 2026-08-19
 >
 > Research input: `F:\flow-notes`
 > Target: make the paper architectures enforce their claims instead of merely
@@ -29,7 +29,9 @@ orchestration features:
   guarded failure paths, resume support, and graph optimization.
 - The paper architectures are loaded by the independent lite runtime. Lite has
   a validated DAG, runtime fan-out, containers, token and worker limits,
-  process-local tool sharing, atomic state snapshots, and a read-only monitor.
+  structured node inputs, configurable trigger modes, independent skill/MCP
+  bundles, process-local Tool and external-resource coordination, atomic state
+  snapshots, and a read-only monitor.
 - Lite does not inherit core behavior, and repository rules require it to stay
   independent. Several paper graphs therefore name a verifier, human gate,
   fail-open step, feedback loop, cache, or capability verifier without runtime
@@ -77,10 +79,10 @@ The highest-weight cross-domain requirements are:
 | G3 | Independent deterministic verifier and fail-closed completion gate | Verifier nodes are conventional Agent nodes; any non-throwing lite result becomes `finished` | P0 |
 | G4 | Real human approval and safe `on_error`/`on_unknown` behavior | `actor` human review and `qasecclaw` fail-open are prompt-only; no approval-wait state exists | P0 |
 | G5 | Bounded generate-execute-verify-revise control flow with typed feedback and semantic stopping | Paper loops are collapsed into one node; `max_iterations` only continues while the model emits tool calls | P0 |
-| G6 | Tool mediation for identity, capabilities, parameter policy, response sanitization, sensitive-action approval, receipts, idempotency, and cross-process coordination | Tool sharing currently handles only process-local concurrency and read/write exclusion | P0 |
+| G6 | Tool mediation for identity, capabilities, parameter policy, response sanitization, sensitive-action approval, receipts, idempotency, and cross-process coordination | Tool sharing and node resource leases enforce process-local concurrency/read-write exclusion; the remaining mediation and cross-process controls are absent | P0 |
 | G7 | Non-bypassable sandbox ceiling, data labels, redaction, and pinned execution identity | Containers have useful defaults, but graphs may request host networking, writable mounts, arbitrary extra arguments, and `:latest` images | P0 |
 | G8 | Run-wide and obligation-level budget reservation for tokens, cost, time, tool calls, CPU, storage, devices, and licenses | Mostly node-local limits and post-call token accounting | P1 |
-| G9 | Frozen kernel, runtime protocol selector, obligation refresh, fresh contexts, versioned fact ledger, cache provenance, and structured handoff/merge | Core statically prepends selected skills and has a free-form scratchboard; lite has no corresponding abstraction | P1 |
+| G9 | Frozen kernel, runtime protocol selector, obligation refresh, fresh contexts, versioned fact ledger, cache provenance, and structured handoff/merge | Core statically prepends selected skills and has a free-form scratchboard; lite now has independent instruction/Tool/MCP skills and a `NodeInput` handoff unit, but not the remaining protocol, fact, cache, or merge contracts | P1 |
 | G10 | Resettable, long-lived execution target lifecycle with leases, snapshots, replay, rollback, and cleanup | Lite uses `docker run --rm` per command; named volumes preserve files, not emulator/device/service state | P1 |
 | G11 | Reproducible experiment matrix, evidence-aware oracle, private/temporal splits, mutation tests, ablations, repeated runs, variance, and promotion/rollback | Core has graph optimization and a score, but no complete trial/evidence model; lite monitor reports status and tokens | P1 |
 | G12 | Restricted runtime task trees with typed plans, role/tool templates, depth limits, budgets, and merge checks | Lite fan-out creates homogeneous copies of one node template; dynamic forests are prompt-only | P2 |
@@ -89,30 +91,29 @@ The highest-weight cross-domain requirements are:
 ### Important concrete mismatches
 
 - `examples/paper_architectures/README.md:99` explicitly says feedback loops
-  are collapsed. `agentflow/lite/agent.py:99-128` does not implement an
-  oracle-driven graph loop.
+  are collapsed. `LiteAgent._run` does not implement an oracle-driven graph
+  loop.
 - `examples/paper_architectures/02-smart-contract/actor.yaml:14-18` describes
-  human approval, but `agentflow/lite/runner.py:357-396` automatically schedules
-  every ready node.
+  human approval, but `GraphRunner.run` automatically schedules every ready
+  node.
 - `examples/paper_architectures/03-open-source-code/qasecclaw.yaml:14-17`
-  describes fail-open behavior, but `agentflow/lite/runner.py:373-377` converts
-  an upstream error into downstream errors.
+  describes fail-open behavior, but `GraphRunner.run` converts an upstream
+  error into downstream errors.
 - `examples/paper_architectures/05-synthesis/bradmoon_harness.yaml:28-39`
   describes a frozen verifier and fail-closed gate, but lite results are free
-  text and `agentflow/lite/runner.py:240-244` marks any normal return finished.
-- `agentflow/lite/tools.py:70-87` models concurrency/read-write policy, while
-  `agentflow/lite/tools.py:277-288` otherwise invokes the handler directly and
-  returns its value to the model.
+  text and `GraphRunner._run_node` marks any normal return finished.
+- Lite Tool and external-resource policies coordinate process-local
+  concurrency/read-write access, but handlers still need identity, schema
+  enforcement, approval, sanitization, receipts, and cross-process fencing.
 - Container `run_command` tools are created dynamically per node in
-  `agentflow/lite/runner.py:417-427`. They do not currently inherit a shared
-  policy for scarce EDA licenses, emulators, physical devices, or other named
-  executors.
-- `agentflow/lite/container.py:82-99` starts an ephemeral container for every
-  command. This cannot represent a multi-step Android session, a forked-chain
-  service, or a stateful EDA target without an external lifecycle adapter.
-- `agentflow/lite/runner.py:68-105` binds resume to the graph hash, not to the
-  target revision, model/router, tool implementation, image digest, prompt
-  protocol versions, or dataset split.
+  `make_agent_factory`. They do not currently inherit a shared policy for
+  scarce EDA licenses, emulators, physical devices, or other named executors.
+- `DockerExecutor.run` starts an ephemeral container for every command. This
+  cannot represent a multi-step Android session, a forked-chain service, or a
+  stateful EDA target without an external lifecycle adapter.
+- `RunState` binds resume to the graph hash, not to the target revision,
+  model/router, tool implementation, image digest, prompt protocol versions,
+  or dataset split.
 - Core facilities are useful precedents, not a solution for lite paper graphs:
   see `agentflow/store.py:55-109`, `agentflow/success.py:36-82`, and
   `agentflow/specs.py:861-889`.
@@ -218,9 +219,10 @@ Deliverables:
 - Tool middleware with `ToolCallContext`, immutable manifest hash, strict input
   and output schemas, pre-call policy, post-call sanitizer, audit receipt,
   idempotency key, and approval hook.
-- Extend shared Tool coordination to dynamically registered container tools,
-  acquire deadlines/cancellation, named resource leases, and a replaceable
-  cross-process backend. A file-lock implementation is sufficient initially.
+- Extend shared Tool and node-resource coordination to dynamically registered
+  container tools, acquire deadlines/cancellation, fencing tokens, and a
+  replaceable cross-process backend. A file-lock implementation is sufficient
+  initially.
 - A non-bypassable `SandboxPolicy` ceiling for image digests, network, mount
   roots, capabilities, user, root filesystem, PIDs, secrets, and forbidden
   Docker arguments. Graphs may only tighten this policy.

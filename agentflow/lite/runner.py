@@ -13,6 +13,11 @@ from pydantic import BaseModel, ConfigDict
 
 from agentflow.lite.agent import AgentResult, LiteAgent
 from agentflow.lite.client import LiteLLMClient
+from agentflow.lite.concurrency import (
+    ExternalResourceCoordinator,
+    ExternalResourceSettings,
+    ResourceLease,
+)
 from agentflow.lite.container import DockerExecutor, container_shell_tool
 from agentflow.lite.graph import (
     GraphSpec,
@@ -22,16 +27,24 @@ from agentflow.lite.graph import (
     resolve_prompt,
 )
 from agentflow.lite.router import ModelRouter
+from agentflow.lite.skills import SkillRegistry
 from agentflow.lite.tools import ToolRegistry
-from agentflow.lite.types import Usage
+from agentflow.lite.types import NodeInput, Usage
 
 NodeStatus = Literal["preparing", "processing", "finished", "errored"]
 
 _TERMINAL: tuple[NodeStatus, NodeStatus] = ("finished", "errored")
 
 
-class _RunnableAgent(Protocol):
+class _PromptRunnableAgent(Protocol):
     def run(self, user_input: str) -> AgentResult: ...
+
+
+class _StructuredRunnableAgent(Protocol):
+    def run_node(self, node_input: NodeInput) -> AgentResult: ...
+
+
+_RunnableAgent = _PromptRunnableAgent | _StructuredRunnableAgent
 
 
 class NodeRun(BaseModel):
@@ -41,6 +54,7 @@ class NodeRun(BaseModel):
     status: NodeStatus = "preparing"
     started_at: float | None = None
     finished_at: float | None = None
+    input: NodeInput | None = None
     result: AgentResult | None = None
     error: str | None = None
     attempts: int = 0
@@ -99,6 +113,7 @@ class RunState:
                     nrun.status = "preparing"
                     nrun.started_at = None
                     nrun.finished_at = None
+                    nrun.input = None
         else:
             self.nodes = {node.id: NodeRun(spec=node) for node in graph.nodes}
             self.events = []
@@ -148,6 +163,11 @@ class RunState:
             self.nodes[node_id].error = None
             self._persist_locked()
 
+    def set_input(self, node_id: str, node_input: NodeInput) -> None:
+        with self._lock:
+            self.nodes[node_id].input = node_input
+            self._persist_locked()
+
     def set_error(self, node_id: str, error: str) -> None:
         with self._lock:
             self.nodes[node_id].error = error
@@ -179,22 +199,46 @@ class GraphRunner:
         max_workers: int = 4,
         *,
         resource_limits: dict[str, int] | None = None,
+        resource_settings: dict[
+            str, ExternalResourceSettings | dict[str, Any]
+        ] | None = None,
         state_path: str | Path | None = None,
         resume: bool = False,
     ):
         if max_workers < 1:
             raise ValueError("max_workers must be at least 1")
         invalid_limits = sorted(
-            name for name, limit in (resource_limits or {}).items() if not name or limit < 1
+            name
+            for name, limit in (resource_limits or {}).items()
+            if not name.strip() or limit < 1
         )
         if invalid_limits:
             raise ValueError(f"resource limits must be positive: {', '.join(invalid_limits)}")
         if resume and state_path is None:
             raise ValueError("resume requires state_path")
+        graph.validate_graph()
         self.graph = graph
         self.agent_factory = agent_factory
         self.max_workers = max_workers
         self.resource_limits = dict(resource_limits or {})
+        merged_resource_settings: dict[
+            str, ExternalResourceSettings | dict[str, Any]
+        ] = dict(graph.resource_settings)
+        merged_resource_settings.update(
+            {
+                name: ExternalResourceSettings(max_concurrency=limit)
+                for name, limit in self.resource_limits.items()
+            }
+        )
+        merged_resource_settings.update(resource_settings or {})
+        self.resource_settings = {
+            name: ExternalResourceSettings.model_validate(settings)
+            for name, settings in merged_resource_settings.items()
+        }
+        self._resources = ExternalResourceCoordinator(
+            self.resource_settings,
+            default_max_concurrency=max_workers,
+        )
         self.state = RunState(graph, state_path=state_path, resume=resume)
 
     def is_done(self) -> bool:
@@ -209,8 +253,15 @@ class GraphRunner:
             waiting_on = [
                 dep for dep in self._dependencies(nrun) if snapshot[dep].status != "finished"
             ]
-            if waiting_on:
-                blocked.append({"node_id": nid, "waiting_on": waiting_on})
+            waits_for_output = (
+                nrun.spec.trigger_mode in ("output_idle", "input_and_output")
+                and not self._output_idle(nid, snapshot)
+            )
+            if waiting_on or waits_for_output:
+                item: dict[str, Any] = {"node_id": nid, "waiting_on": waiting_on}
+                if waits_for_output:
+                    item["waiting_for"] = "output_idle"
+                blocked.append(item)
         return blocked
 
     def runtime_edges(self) -> list[tuple[str, str]]:
@@ -232,14 +283,34 @@ class GraphRunner:
                 edges.append(barrier)
         return edges
 
-    def _run_node(self, node_id: str) -> None:
+    def _node_input(self, nrun: NodeRun) -> NodeInput:
+        results = self.state.results()
+        dependencies = self._dependencies(nrun)
+        return NodeInput(
+            node_id=nrun.spec.id,
+            prompt=resolve_prompt(nrun.spec, results),
+            upstream={
+                dependency: results[dependency].text
+                for dependency in dependencies
+                if dependency in results
+            },
+            fanout_parent=nrun.fanout_parent,
+            fanout_item=nrun.fanout_item,
+        )
+
+    def _run_node(self, node_id: str, lease: ResourceLease) -> None:
         nrun = self.state.snapshot()["nodes"][node_id]
         self.state.start_attempt(node_id)
         self.state.set_status(node_id, "processing")
         try:
+            node_input = self._node_input(nrun)
+            self.state.set_input(node_id, node_input)
             agent = self.agent_factory(nrun.spec)
-            prompt = resolve_prompt(nrun.spec, self.state.results())
-            result = agent.run(prompt)
+            run_node = getattr(agent, "run_node", None)
+            if callable(run_node):
+                result = run_node(node_input)
+            else:
+                result = agent.run(node_input.prompt)
             self.state.set_result(node_id, result)
             self.state.set_status(node_id, "finished")
         except Exception as exc:  # noqa: BLE001 - node failures are captured in state
@@ -250,6 +321,8 @@ class GraphRunner:
                 self.state.set_status(node_id, "preparing", detail=detail)
             else:
                 self.state.set_status(node_id, "errored", detail=str(exc))
+        finally:
+            lease.release()
 
     def _dependencies(self, nrun: NodeRun) -> list[str]:
         if nrun.fanout_parent is not None:
@@ -368,19 +441,31 @@ class GraphRunner:
                 progressed = True
         return progressed
 
-    def _resource_available(
+    def _output_idle(self, node_id: str, snapshot: dict[str, NodeRun]) -> bool:
+        for source, target_id in self.runtime_edges():
+            if source != node_id:
+                continue
+            target = snapshot[target_id]
+            if target.status == "preparing":
+                continue
+            if target.spec.fanout is not None and target.status == "processing":
+                continue
+            return False
+        return True
+
+    def _trigger_ready(
         self,
         nrun: NodeRun,
-        futures: dict,
+        dependencies: list[str],
         snapshot: dict[str, NodeRun],
     ) -> bool:
-        limit = self.resource_limits.get(nrun.spec.resource, self.max_workers)
-        in_use = sum(
-            1
-            for running_id in futures.values()
-            if snapshot[running_id].spec.resource == nrun.spec.resource
-        )
-        return in_use < limit
+        input_ready = all(snapshot[dependency].status == "finished" for dependency in dependencies)
+        if nrun.spec.trigger_mode == "input_ready":
+            return input_ready
+        output_idle = self._output_idle(nrun.spec.id, snapshot)
+        if nrun.spec.trigger_mode == "output_idle":
+            return output_idle
+        return input_ready and output_idle
 
     def run(self) -> RunState:
         futures: dict = {}
@@ -404,7 +489,7 @@ class GraphRunner:
                         self.state.set_error(nid, error)
                         self.state.set_status(nid, "errored", detail=error)
                         progressed = True
-                    elif all(snapshot[d].status == "finished" for d in deps):
+                    elif self._trigger_ready(nrun, deps, snapshot):
                         if nrun.spec.fanout is not None:
                             try:
                                 self._expand_fanout(nid, nrun)
@@ -413,8 +498,18 @@ class GraphRunner:
                                 self.state.set_status(nid, "errored", detail=str(exc))
                             progressed = True
                             snapshot = self.state.snapshot()["nodes"]
-                        elif self._resource_available(nrun, futures, snapshot):
-                            futures[pool.submit(self._run_node, nid)] = nid
+                        else:
+                            lease = self._resources.try_acquire(
+                                nrun.spec.resource_requests()
+                            )
+                            if lease is None:
+                                continue
+                            try:
+                                future = pool.submit(self._run_node, nid, lease)
+                            except Exception:
+                                lease.release()
+                                raise
+                            futures[future] = nid
                             progressed = True
                 if futures:
                     done, _ = wait(list(futures), return_when=FIRST_COMPLETED)
@@ -436,6 +531,7 @@ def make_agent_factory(
     router: ModelRouter | None = None,
     default_model: str | None = None,
     registry: ToolRegistry | None = None,
+    skills: SkillRegistry | None = None,
     default_role: str | None = None,
 ) -> Callable[[NodeSpec], LiteAgent]:
     if (client is None) == (router is None):
@@ -453,9 +549,15 @@ def make_agent_factory(
             if tools is None:
                 tools = ToolRegistry()
             tools.register(container_shell_tool(DockerExecutor(spec.container)))
+        selected_skills = skills.subset(spec.skills) if skills is not None else None
+        if skills is None and spec.skills:
+            raise ValueError(
+                f"node '{spec.id}' requests skills but no skill registry was provided"
+            )
         kwargs: dict = {
             "system_prompt": spec.system_prompt,
             "tools": tools,
+            "skills": selected_skills,
             "max_iterations": spec.max_iterations or 8,
             "max_total_tokens": spec.max_total_tokens,
         }

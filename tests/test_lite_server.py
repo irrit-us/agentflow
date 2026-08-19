@@ -128,6 +128,8 @@ def test_state_endpoint_structure():
     assert by_id["a"]["usage"]["total_tokens"] == 5
     assert by_id["a"]["started_at"] is not None
     assert by_id["a"]["error"] is None
+    assert by_id["a"]["resources"] == [{"name": "default", "access": "read"}]
+    assert by_id["a"]["trigger_mode"] == "input_ready"
 
 
 def test_state_and_inspect_expose_runtime_fanout_metadata():
@@ -167,6 +169,13 @@ def test_inspect_returns_messages_and_404_for_unknown():
     assert roles == ["user", "assistant"]
     assert body["messages"][0]["content"] == "do a"
     assert body["messages"][1]["content"] == "out:do a"
+    assert body["input"] == {
+        "node_id": "a",
+        "prompt": "do a",
+        "upstream": {},
+        "fanout_parent": None,
+        "fanout_item": None,
+    }
 
     pending = TestClient(create_app(_pending_runner()))
     empty = pending.get("/api/nodes/a/inspect").json()

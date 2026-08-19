@@ -6,7 +6,14 @@ from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
-from agentflow.lite import LiteLLMClient, Message, SharedConcurrencyBudget
+from agentflow.lite import (
+    ExternalResourceCoordinator,
+    ExternalResourceSettings,
+    LiteLLMClient,
+    Message,
+    ResourceRequest,
+    SharedConcurrencyBudget,
+)
 
 
 def _payload() -> dict:
@@ -86,3 +93,55 @@ def test_retry_backoff_does_not_hold_request_budget(monkeypatch):
     assert calls == 2
     assert snapshots[0].active == 0
     assert budget.snapshot().acquired == 2
+
+
+def test_external_resources_are_acquired_as_one_atomic_set():
+    coordinator = ExternalResourceCoordinator(
+        {
+            "database": ExternalResourceSettings(max_concurrency=1),
+            "device": ExternalResourceSettings(max_concurrency=1),
+        },
+        default_max_concurrency=4,
+    )
+    database = coordinator.try_acquire([ResourceRequest(name="database")])
+    assert database is not None
+
+    combined = coordinator.try_acquire(
+        [ResourceRequest(name="database"), ResourceRequest(name="device")]
+    )
+    assert combined is None
+
+    # The failed combined request did not partially reserve the free device.
+    device = coordinator.try_acquire([ResourceRequest(name="device")])
+    assert device is not None
+    device.release()
+    database.release()
+
+
+def test_external_resource_write_lease_excludes_reads_and_is_idempotent():
+    coordinator = ExternalResourceCoordinator(
+        {"index": {"max_concurrency": 2}},
+        default_max_concurrency=4,
+    )
+    first = coordinator.try_acquire([ResourceRequest(name="index")])
+    second = coordinator.try_acquire([ResourceRequest(name="index")])
+    assert first is not None
+    assert second is not None
+    assert coordinator.try_acquire(
+        [ResourceRequest(name="index", access="write")]
+    ) is None
+
+    first.release()
+    second.release()
+    writer = coordinator.try_acquire(
+        [ResourceRequest(name="index", access="write")]
+    )
+    assert writer is not None
+    assert coordinator.try_acquire([ResourceRequest(name="index")]) is None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        releases = [pool.submit(writer.release) for _ in range(2)]
+        for release in releases:
+            release.result(timeout=5)
+    final_reader = coordinator.try_acquire([ResourceRequest(name="index")])
+    assert final_reader is not None
+    final_reader.release()

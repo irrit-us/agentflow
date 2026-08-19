@@ -6,8 +6,9 @@ from pydantic import BaseModel, ConfigDict
 
 from agentflow.lite.client import LiteLLMClient
 from agentflow.lite.router import ModelRouter
+from agentflow.lite.skills import Skill, SkillRegistry
 from agentflow.lite.tools import Tool, ToolRegistry
-from agentflow.lite.types import ChatResult, Message, Usage
+from agentflow.lite.types import ChatResult, Message, NodeInput, Usage
 
 
 class BudgetExceededError(Exception):
@@ -40,6 +41,7 @@ class LiteAgent:
         model: str | None = None,
         system_prompt: str | None = None,
         tools: list[Tool] | ToolRegistry | None = None,
+        skills: list[Skill] | SkillRegistry | None = None,
         max_iterations: int = 8,
         max_total_tokens: int | None = None,
         temperature: float | None = None,
@@ -55,13 +57,24 @@ class LiteAgent:
         self.router = router
         self.role = role
         self.model = model
-        self.system_prompt = system_prompt
-        if tools is None:
-            self.registry = ToolRegistry()
-        elif isinstance(tools, ToolRegistry):
-            self.registry = tools
+        if skills is None:
+            self.skills = SkillRegistry()
+        elif isinstance(skills, SkillRegistry):
+            self.skills = skills
         else:
-            self.registry = ToolRegistry(tools)
+            self.skills = SkillRegistry(skills)
+        skill_prelude = self.skills.instruction_prelude()
+        self.system_prompt = "\n\n".join(
+            section for section in (skill_prelude, system_prompt) if section
+        ) or None
+        if tools is None:
+            tool_registry = ToolRegistry()
+        elif isinstance(tools, ToolRegistry):
+            tool_registry = tools
+        else:
+            tool_registry = ToolRegistry(tools)
+        skill_tools = self.skills.tool_registry()
+        self.registry = ToolRegistry.combine(tool_registry, skill_tools)
         self.max_iterations = max_iterations
         self.max_total_tokens = max_total_tokens
         self.temperature = temperature
@@ -130,6 +143,11 @@ class LiteAgent:
 
     def run(self, user_input: str, history: list[Message] | None = None) -> AgentResult:
         return self._run(user_input, history, None)
+
+    def run_node(self, node_input: NodeInput) -> AgentResult:
+        """Run one graph-provided input unit using its model-facing prompt."""
+
+        return self.run(node_input.prompt)
 
     def run_structured(self, user_input: str, schema: type[BaseModel]) -> BaseModel:
         response_format = {

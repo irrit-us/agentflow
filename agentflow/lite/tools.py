@@ -226,6 +226,7 @@ class ToolRegistry:
                 "tool sharing policies reference unknown tools: " + ", ".join(missing)
             )
         self._coordinator = _ToolCoordinator(config)
+        self._coordinators = {name: self._coordinator for name in self._tools}
 
     @classmethod
     def from_tools(
@@ -237,17 +238,35 @@ class ToolRegistry:
         return cls(tools, sharing=sharing)
 
     @classmethod
-    def _from_shared_coordinator(
+    def _from_shared_coordinators(
         cls,
         tools: list[Tool],
-        coordinator: _ToolCoordinator,
+        coordinators: dict[str, _ToolCoordinator],
     ) -> ToolRegistry:
-        registry = cls(tools)
-        registry._coordinator = coordinator
+        registry = cls()
+        registry._tools = {item.name: item for item in tools}
+        registry._coordinators = dict(coordinators)
         return registry
 
+    @classmethod
+    def combine(cls, *registries: ToolRegistry) -> ToolRegistry:
+        """Combine registry views while preserving each tool's coordinator."""
+
+        combined = cls()
+        for registry in registries:
+            for name, item in registry._tools.items():
+                if name in combined._tools:
+                    raise ValueError(f"duplicate tool '{name}' across registries")
+                combined._tools[name] = item
+                combined._coordinators[name] = registry._coordinators[name]
+        return combined
+
     def register(self, tool_: Tool) -> None:
+        if tool_.name in self._tools:
+            raise ValueError(f"duplicate tool '{tool_.name}'")
         self._tools[tool_.name] = tool_
+        if hasattr(self, "_coordinator"):
+            self._coordinators[tool_.name] = self._coordinator
 
     def get(self, name: str) -> Tool | None:
         return self._tools.get(name)
@@ -261,7 +280,10 @@ class ToolRegistry:
             if item is None:
                 raise ValueError(f"unknown tool '{name}'")
             selected.append(item)
-        return self._from_shared_coordinator(selected, self._coordinator)
+        return self._from_shared_coordinators(
+            selected,
+            {item.name: self._coordinators[item.name] for item in selected},
+        )
 
     def to_openai_tools(self) -> list[dict[str, Any]]:
         return [
@@ -281,7 +303,7 @@ class ToolRegistry:
         if target is None:
             return f"Error: unknown tool '{call.name}'"
         try:
-            with self._coordinator.hold(call.name):
+            with self._coordinators[call.name].hold(call.name):
                 result = target.handler(**call.arguments)
                 if isinstance(result, str):
                     return result

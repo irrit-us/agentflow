@@ -48,6 +48,10 @@ def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = No
                 "error": nrun.error,
                 "attempts": nrun.attempts,
                 "resource": nrun.spec.resource,
+                "resources": [
+                    request.model_dump() for request in nrun.spec.resource_requests()
+                ],
+                "trigger_mode": nrun.spec.trigger_mode,
                 "priority": nrun.spec.priority,
                 "fanout_parent": nrun.fanout_parent,
                 "usage": nrun.result.usage.model_dump() if nrun.result else None,
@@ -77,9 +81,14 @@ def create_app(runner: GraphRunner, health_probe: Callable[[], dict] | None = No
             "error": nrun.error,
             "attempts": nrun.attempts,
             "resource": nrun.spec.resource,
+            "resources": [
+                request.model_dump() for request in nrun.spec.resource_requests()
+            ],
+            "trigger_mode": nrun.spec.trigger_mode,
             "priority": nrun.spec.priority,
             "fanout_parent": nrun.fanout_parent,
             "fanout_item": nrun.fanout_item,
+            "input": nrun.input.model_dump() if nrun.input else None,
             "iterations": result.iterations if result else None,
             "usage": result.usage.model_dump() if result else None,
             "messages": [m.model_dump() for m in result.messages] if result else [],

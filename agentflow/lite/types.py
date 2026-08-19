@@ -3,7 +3,25 @@ from __future__ import annotations
 import json
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class NodeInput(BaseModel):
+    """One validated input unit passed from the graph runner to an Agent node.
+
+    ``prompt`` is the model-facing instruction after template resolution.
+    ``upstream`` retains the direct predecessor outputs as structured data so
+    Agent adapters do not need to reconstruct graph context from prompt text.
+    Runtime fan-out children also receive their source item and parent ID.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    node_id: str
+    prompt: str
+    upstream: dict[str, str] = Field(default_factory=dict)
+    fanout_parent: str | None = None
+    fanout_item: Any = None
 
 
 class ToolCall(BaseModel):

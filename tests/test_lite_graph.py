@@ -6,8 +6,10 @@ import pytest
 
 from agentflow.lite import (
     AgentResult,
+    ExternalResourceSettings,
     GraphSpec,
     NestedConcurrencySpec,
+    ResourceRequest,
     Usage,
     fanout_items,
     load_graph,
@@ -296,4 +298,73 @@ def test_validate_rejects_invalid_fanout_item_variable():
     )
 
     with pytest.raises(ValueError, match="item_var is invalid"):
+        graph.validate_graph()
+
+
+def test_graph_loads_resource_settings_requests_skills_and_trigger_mode(tmp_path):
+    path = tmp_path / "resources.yaml"
+    path.write_text(
+        """
+resource_settings:
+  knowledge-base:
+    max_concurrency: 3
+nodes:
+  - id: refresh
+    prompt: refresh
+    skills: [index-maintenance]
+    trigger_mode: input_and_output
+    resources:
+      - name: knowledge-base
+        access: write
+""",
+        encoding="utf-8",
+    )
+
+    graph = load_graph(path)
+    node = graph.nodes[0]
+
+    assert graph.resource_settings == {
+        "knowledge-base": ExternalResourceSettings(max_concurrency=3)
+    }
+    assert node.resources == [ResourceRequest(name="knowledge-base", access="write")]
+    assert node.skills == ["index-maintenance"]
+    assert node.trigger_mode == "input_and_output"
+
+
+def test_resource_requests_reject_duplicates_and_conflicting_access():
+    with pytest.raises(ValueError, match="resource name must not be blank"):
+        NodeSpec(id="blank", prompt="x", resource="  ")
+
+    with pytest.raises(ValueError, match="requested more than once"):
+        NodeSpec(
+            id="duplicate",
+            prompt="x",
+            resources=[{"name": "db"}, {"name": "db"}],
+        )
+
+    with pytest.raises(ValueError, match="conflicting access modes"):
+        NodeSpec(
+            id="conflict",
+            prompt="x",
+            resources=[
+                {"name": "db", "access": "read"},
+                {"name": "db", "access": "write"},
+            ],
+        )
+
+
+def test_output_idle_trigger_rejects_input_dependencies():
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="source", prompt="source"),
+            NodeSpec(
+                id="invalid",
+                prompt="invalid",
+                depends_on=["source"],
+                trigger_mode="output_idle",
+            ),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="cannot declare input dependencies: invalid"):
         graph.validate_graph()

@@ -117,6 +117,12 @@ result = agent.run("What is 40 + 2?")
 print(result.text, result.iterations)
 ```
 
+Skills are independent instruction/Tool bundles. Pass `skills=[...]` directly
+to `LiteAgent`, or pass a `SkillRegistry` to `make_agent_factory` and select
+names with `NodeSpec.skills`. `mcp_skill` adapts any synchronous
+`MCPToolProvider` to the same abstraction; MCP tools are namespaced by skill by
+default and remain subject to normal Tool sharing policies.
+
 ## Routing
 
 `ModelRouter` maps roles to ordered fallback chains of `ModelProfile`s; on
@@ -173,6 +179,12 @@ Pipelines are declared as nodes and edges, loaded with `load_graph`, and
 executed by `GraphRunner` with dependency-ordered parallelism. `depends_on`
 and explicit `edges` are equivalent; `{{ nodes.<id>.text }}` references
 upstream results.
+
+The runner constructs and persists one `NodeInput` for each invocation. New
+Agent adapters can implement `run_node(NodeInput)` to receive the resolved
+prompt, direct upstream outputs, and fan-out metadata as one validated unit.
+Adapters that only implement `run(str)` continue to receive the resolved
+prompt.
 
 ```yaml
 name: audit
@@ -250,6 +262,18 @@ runner = GraphRunner(
 state = runner.run()
 ```
 
+For multi-resource or read/write-aware work, declare graph
+`resource_settings` and node `resources`. The scheduler acquires the complete
+set atomically before submission: read leases share configured capacity and a
+write lease excludes every other lease for that resource until the whole node
+invocation ends. The older single `resource` plus `resource_limits` form
+remains supported.
+
+Nodes also support `trigger_mode`: `input_ready` (the default), `output_idle`
+for dependency-free source nodes, and `input_and_output` for dependency
+readiness plus downstream-idle backpressure. These modes control a one-shot DAG
+invocation; they do not turn a node into a recurring subscription.
+
 The state file belongs to one runner process. Resume rejects a state file if
 the graph definition changed, preventing results from a different workflow
 from being silently reused. Runtime fan-out is reconciled against the persisted
@@ -258,6 +282,9 @@ while unexpected children or changed child specifications fail the parent
 instead of producing a partial aggregate. See
 `examples/lite_dynamic_audit.yaml` for a planner-to-link-audit-to-review
 pipeline.
+
+See [Lite Agent graph best practices](best-practices.md) for the recommended
+input, trigger, Tool atomicity, resource lease, and skill/MCP patterns.
 
 ## Monitor
 

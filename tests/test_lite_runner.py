@@ -7,11 +7,14 @@ import time
 import httpx
 
 from agentflow.lite import (
+    ExternalResourceSettings,
     GraphRunner,
     GraphSpec,
     LiteLLMClient,
     NodeRun,
     NodeSpec,
+    NodeInput,
+    ResourceRequest,
     Usage,
     make_agent_factory,
 )
@@ -74,6 +77,45 @@ def test_linear_pipeline_runs_in_order_with_prompt_resolution():
         assert seq == ["processing", "finished"]
     assert nodes["b"].started_at >= nodes["a"].finished_at
     assert runner.is_done() is True
+
+
+def test_runner_passes_and_persists_one_structured_node_input_unit():
+    received: dict[str, NodeInput] = {}
+
+    class StructuredAgent:
+        def __init__(self, node_id: str):
+            self.node_id = node_id
+
+        def run_node(self, node_input: NodeInput) -> AgentResult:
+            received[self.node_id] = node_input
+            return AgentResult(
+                text=f"out:{node_input.prompt}",
+                messages=[],
+                usage=Usage(),
+                iterations=1,
+            )
+
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="collect", prompt="collect"),
+            NodeSpec(
+                id="review",
+                prompt="review {{ nodes.collect.text }}",
+                depends_on=["collect"],
+            ),
+        ]
+    )
+    runner = GraphRunner(graph, lambda spec: StructuredAgent(spec.id))
+
+    nodes = runner.run().snapshot()["nodes"]
+
+    assert received["collect"] == NodeInput(node_id="collect", prompt="collect")
+    assert received["review"] == NodeInput(
+        node_id="review",
+        prompt="review out:collect",
+        upstream={"collect": "out:collect"},
+    )
+    assert nodes["review"].input == received["review"]
 
 
 def test_diamond_waits_for_all_parents():
@@ -308,6 +350,13 @@ def test_runtime_fanout_expands_items_and_aggregates_results():
     assert nodes["audit-link"].status == "finished"
     assert nodes["audit-link--0001"].result.text == "answer:audit L-1"
     assert nodes["audit-link--0002"].result.text == "answer:audit L-2"
+    assert nodes["audit-link--0001"].input == NodeInput(
+        node_id="audit-link--0001",
+        prompt="audit L-1",
+        upstream={"plan": '{"links":[{"id":"L-1"},{"id":"L-2"}]}'},
+        fanout_parent="audit-link",
+        fanout_item={"id": "L-1"},
+    )
     aggregate = json.loads(nodes["audit-link"].result.text)
     assert [entry["item"]["id"] for entry in aggregate] == ["L-1", "L-2"]
     assert nodes["audit-link"].result.usage.total_tokens == 10
@@ -354,6 +403,154 @@ def test_resource_limits_bound_each_resource_independently():
     runner.run()
 
     assert peaks == {"forge": 1, "llm": 2}
+
+
+def test_resource_readers_overlap_and_writer_is_atomic_for_whole_node():
+    lock = threading.Lock()
+    readers_ready = threading.Event()
+    release_readers = threading.Event()
+    readers = 0
+    writer = False
+    violations: list[str] = []
+
+    class ResourceAgent:
+        def __init__(self, access: str):
+            self.access = access
+
+        def run(self, prompt: str) -> AgentResult:
+            nonlocal readers, writer
+            if self.access == "read":
+                with lock:
+                    readers += 1
+                    if writer:
+                        violations.append("reader overlapped writer")
+                    if readers == 2:
+                        readers_ready.set()
+                release_readers.wait(timeout=5)
+                with lock:
+                    readers -= 1
+            else:
+                with lock:
+                    if readers or writer:
+                        violations.append("writer overlapped another lease")
+                    writer = True
+                with lock:
+                    writer = False
+            return AgentResult(text=prompt, messages=[], usage=Usage(), iterations=1)
+
+    graph = GraphSpec(
+        resource_settings={"index": ExternalResourceSettings(max_concurrency=2)},
+        nodes=[
+            NodeSpec(
+                id="read-a",
+                prompt="read-a",
+                resources=[ResourceRequest(name="index")],
+            ),
+            NodeSpec(
+                id="read-b",
+                prompt="read-b",
+                resources=[ResourceRequest(name="index")],
+            ),
+            NodeSpec(
+                id="write",
+                prompt="write",
+                resources=[ResourceRequest(name="index", access="write")],
+            ),
+        ],
+    )
+    runner = GraphRunner(
+        graph,
+        lambda spec: ResourceAgent(spec.resources[0].access),
+        max_workers=3,
+    )
+
+    thread = runner.run_in_background()
+    try:
+        assert readers_ready.wait(timeout=5)
+    finally:
+        release_readers.set()
+        thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert violations == []
+    assert runner.is_done() is True
+
+
+def test_runtime_resource_settings_override_legacy_and_graph_capacities():
+    graph = GraphSpec(
+        resource_settings={"index": ExternalResourceSettings(max_concurrency=1)},
+        nodes=[NodeSpec(id="read", prompt="read", resource="index")],
+    )
+
+    runner = GraphRunner(
+        graph,
+        lambda spec: None,
+        resource_limits={"index": 2},
+        resource_settings={"index": {"max_concurrency": 3}},
+    )
+
+    assert runner.resource_settings["index"].max_concurrency == 3
+
+
+def test_trigger_modes_evaluate_input_and_output_conditions_independently():
+    def runner_for(mode: str) -> GraphRunner:
+        graph = GraphSpec(
+            nodes=[
+                NodeSpec(id="producer", prompt="produce", trigger_mode=mode),
+                NodeSpec(id="consumer", prompt="consume", depends_on=["producer"]),
+            ]
+        )
+        return GraphRunner(graph, lambda spec: None)
+
+    input_runner = runner_for("input_ready")
+    input_snapshot = input_runner.state.snapshot()["nodes"]
+    input_runner.state.set_status("consumer", "processing")
+    input_snapshot = input_runner.state.snapshot()["nodes"]
+    assert input_runner._trigger_ready(
+        input_snapshot["producer"], [], input_snapshot
+    ) is True
+
+    output_runner = runner_for("output_idle")
+    output_runner.state.set_status("consumer", "processing")
+    output_snapshot = output_runner.state.snapshot()["nodes"]
+    assert output_runner._trigger_ready(
+        output_snapshot["producer"], [], output_snapshot
+    ) is False
+    assert output_runner.blocked() == [
+        {"node_id": "producer", "waiting_on": [], "waiting_for": "output_idle"}
+    ]
+
+    combined_runner = runner_for("input_and_output")
+    combined_runner.state.set_status("consumer", "processing")
+    combined_snapshot = combined_runner.state.snapshot()["nodes"]
+    assert combined_runner._trigger_ready(
+        combined_snapshot["producer"], [], combined_snapshot
+    ) is False
+
+
+def test_output_idle_and_combined_trigger_modes_run_in_normal_dag_state():
+    order: list[str] = []
+
+    class RecordingAgent:
+        def run(self, prompt: str) -> AgentResult:
+            order.append(prompt)
+            return AgentResult(text=prompt, messages=[], usage=Usage(), iterations=1)
+
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="source", prompt="source", trigger_mode="output_idle"),
+            NodeSpec(
+                id="review",
+                prompt="review",
+                depends_on=["source"],
+                trigger_mode="input_and_output",
+            ),
+        ]
+    )
+
+    GraphRunner(graph, lambda spec: RecordingAgent(), max_workers=1).run()
+
+    assert order == ["source", "review"]
 
 
 def test_priority_controls_ready_node_submission():

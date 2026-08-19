@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from agentflow.lite.agent import AgentResult, BudgetExceededError, LiteAgent
 from agentflow.lite.client import LiteLLMClient, LLMError
-from agentflow.lite.concurrency import ConcurrencySnapshot, SharedConcurrencyBudget
+from agentflow.lite.concurrency import (
+    ConcurrencySnapshot,
+    ExternalResourceCoordinator,
+    ExternalResourceSettings,
+    ResourceLease,
+    ResourceRequest,
+    SharedConcurrencyBudget,
+)
 from agentflow.lite.container import (
     ContainerConfig,
     ContainerError,
@@ -30,6 +37,7 @@ from agentflow.lite.graph import (
     GraphSpec,
     NestedConcurrencySpec,
     NodeSpec,
+    NodeTriggerMode,
     fanout_items,
     load_graph,
     render_fanout_prompt,
@@ -45,6 +53,13 @@ from agentflow.lite.runner import (
     make_agent_factory,
 )
 from agentflow.lite.server import create_app, make_llm_health_probe
+from agentflow.lite.skills import (
+    MCPToolDefinition,
+    MCPToolProvider,
+    Skill,
+    SkillRegistry,
+    mcp_skill,
+)
 from agentflow.lite.tools import (
     Tool,
     ToolAccessPolicy,
@@ -52,7 +67,7 @@ from agentflow.lite.tools import (
     ToolSharingConfig,
     tool,
 )
-from agentflow.lite.types import ChatResult, Message, ToolCall, Usage
+from agentflow.lite.types import ChatResult, Message, NodeInput, ToolCall, Usage
 from agentflow.lite.volumes import Mount, ensure_volume
 
 __all__ = [
@@ -68,6 +83,8 @@ __all__ = [
     "DockerExecutor",
     "EdgeSpec",
     "ExecResult",
+    "ExternalResourceCoordinator",
+    "ExternalResourceSettings",
     "FanOutSpec",
     "FidelityLevel",
     "GraphRunner",
@@ -78,9 +95,13 @@ __all__ = [
     "Message",
     "ModelProfile",
     "ModelRouter",
+    "MCPToolDefinition",
+    "MCPToolProvider",
     "Mount",
     "NodeRun",
+    "NodeInput",
     "NodeSpec",
+    "NodeTriggerMode",
     "NestedConcurrencySpec",
     "NodeStatus",
     "PaperArchitectureEntry",
@@ -88,6 +109,8 @@ __all__ = [
     "RUNTIME_CAPABILITY_ADAPTERS",
     "RunEvent",
     "RunState",
+    "ResourceLease",
+    "ResourceRequest",
     "RunReadiness",
     "Tool",
     "ToolAccessPolicy",
@@ -95,6 +118,8 @@ __all__ = [
     "ToolRegistry",
     "ToolSharingConfig",
     "SharedConcurrencyBudget",
+    "Skill",
+    "SkillRegistry",
     "Usage",
     "ArchitectureRequirements",
     "container_shell_tool",
@@ -105,6 +130,7 @@ __all__ = [
     "load_paper_architecture_manifest",
     "make_agent_factory",
     "make_llm_health_probe",
+    "mcp_skill",
     "resolve_prompt",
     "render_fanout_prompt",
     "tool",
