@@ -558,7 +558,7 @@ def make_agent_factory(
             "system_prompt": spec.system_prompt,
             "tools": tools,
             "skills": selected_skills,
-            "max_iterations": spec.max_iterations or 8,
+            "max_iterations": spec.max_iterations if spec.max_iterations is not None else 8,
             "max_total_tokens": spec.max_total_tokens,
         }
         if router is not None:

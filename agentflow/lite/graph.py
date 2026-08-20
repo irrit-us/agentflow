@@ -73,8 +73,8 @@ class NodeSpec(BaseModel):
     tools: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
-    max_iterations: int | None = None
-    max_total_tokens: int | None = None
+    max_iterations: int | None = Field(default=None, ge=1)
+    max_total_tokens: int | None = Field(default=None, ge=1)
     container: ContainerConfig | None = None
     fanout: FanOutSpec | None = None
     resource: str = Field(default="default", min_length=1)

@@ -217,6 +217,12 @@ def test_node_without_container_defaults_to_none():
     assert node.container is None
 
 
+@pytest.mark.parametrize("field", ["max_iterations", "max_total_tokens"])
+def test_node_rejects_non_positive_runtime_limits(field: str):
+    with pytest.raises(ValueError, match=field):
+        NodeSpec.model_validate({"id": "invalid", "prompt": "x", field: 0})
+
+
 def test_nested_concurrency_policy_loads_and_rejects_invalid_limits(tmp_path):
     path = tmp_path / "nested.yaml"
     path.write_text(

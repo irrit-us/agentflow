@@ -54,6 +54,10 @@ class LiteAgent:
             raise ValueError("`role` is required when using a router")
         if client is not None and model is None:
             raise ValueError("`model` is required when using a client")
+        if max_iterations < 1:
+            raise ValueError("max_iterations must be at least 1")
+        if max_total_tokens is not None and max_total_tokens < 1:
+            raise ValueError("max_total_tokens must be at least 1")
         self.client = client
         self.router = router
         self.role = role

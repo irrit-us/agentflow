@@ -122,6 +122,102 @@ def test_chat_retries_on_429_then_succeeds(monkeypatch: pytest.MonkeyPatch):
     assert result.message.content == "recovered"
 
 
+def test_chat_retries_transport_errors_with_exponential_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sleeps: list[float] = []
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise httpx.ConnectError("temporarily unavailable", request=request)
+        return httpx.Response(200, json=_chat_payload("recovered"))
+
+    monkeypatch.setattr("agentflow.lite.client.time.sleep", sleeps.append)
+    client = LiteLLMClient(
+        base_url="http://testserver/v1",
+        max_retries=2,
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = client.chat([Message(role="user", content="hi")], model="test-model")
+
+    assert calls == 3
+    assert sleeps == [1.0, 2.0]
+    assert result.message.content == "recovered"
+
+
+@pytest.mark.parametrize(
+    ("retry_after", "expected_delay"),
+    [
+        ("0.25", 0.25),
+        ("120", 60.0),
+        ("-1", 1.0),
+        ("nan", 1.0),
+        ("invalid", 1.0),
+    ],
+)
+def test_retry_after_uses_only_finite_non_negative_delays(
+    monkeypatch: pytest.MonkeyPatch,
+    retry_after: str,
+    expected_delay: float,
+):
+    sleeps: list[float] = []
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(
+                503,
+                headers={"Retry-After": retry_after},
+                json={"error": "busy"},
+            )
+        return httpx.Response(200, json=_chat_payload("recovered"))
+
+    monkeypatch.setattr("agentflow.lite.client.time.sleep", sleeps.append)
+    client = LiteLLMClient(
+        base_url="http://testserver/v1",
+        max_retries=1,
+        transport=httpx.MockTransport(handler),
+    )
+
+    client.chat([Message(role="user", content="hi")], model="test-model")
+
+    assert sleeps == [expected_delay]
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (httpx.Response(200, content=b"not-json"), "Invalid JSON"),
+        (httpx.Response(200, json=[]), "expected a JSON object"),
+        (httpx.Response(200, json={"choices": []}), "contains no choices"),
+    ],
+)
+def test_chat_reports_malformed_success_responses_as_llm_errors(
+    response: httpx.Response,
+    message: str,
+):
+    client = LiteLLMClient(
+        base_url="http://testserver/v1",
+        transport=httpx.MockTransport(lambda request: response),
+    )
+
+    with pytest.raises(LLMError, match=message) as exc_info:
+        client.chat([Message(role="user", content="hi")], model="test-model")
+
+    assert exc_info.value.status_code in (None, 200)
+
+
+def test_client_rejects_negative_retry_limit():
+    with pytest.raises(ValueError, match="max_retries must be non-negative"):
+        LiteLLMClient(base_url="http://testserver/v1", max_retries=-1)
+
+
 def test_base_url_trailing_slash_is_normalized():
     seen_paths: list[str] = []
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from typing import Any
@@ -41,6 +42,8 @@ class LiteLLMClient:
         transport: httpx.BaseTransport | None = None,
         request_budget: SharedConcurrencyBudget | None = None,
     ):
+        if max_retries < 0:
+            raise ValueError("max_retries must be non-negative")
         self.base_url = base_url.rstrip("/")
         if api_key is None and api_key_env is not None:
             api_key = os.environ.get(api_key_env)
@@ -94,8 +97,8 @@ class LiteLLMClient:
         return self._parse_response(data)
 
     def _post_with_retries(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
-        last_error: LLMError | None = None
-        for attempt in range(max(self.max_retries, 0) + 1):
+        attempt = 0
+        while True:
             try:
                 if self.request_budget is None:
                     response = self._client.post(url, json=payload, headers=self._headers())
@@ -103,34 +106,44 @@ class LiteLLMClient:
                     with self.request_budget.hold():
                         response = self._client.post(url, json=payload, headers=self._headers())
             except httpx.HTTPError as exc:
-                last_error = LLMError(f"HTTP request failed: {exc}")
-                if attempt < self.max_retries:
-                    time.sleep(min(2.0**attempt, 30.0))
-                    continue
-                raise last_error from exc
+                error = LLMError(f"HTTP request failed: {exc}")
+                if attempt >= self.max_retries:
+                    raise error from exc
+                time.sleep(min(2.0**attempt, 30.0))
+                attempt += 1
+                continue
             if response.status_code == 429 or response.status_code >= 500:
-                last_error = LLMError("LLM request failed", response.status_code, response.text)
-                if attempt < self.max_retries:
-                    time.sleep(self._retry_delay(response, attempt))
-                    continue
-                raise last_error
+                error = LLMError("LLM request failed", response.status_code, response.text)
+                if attempt >= self.max_retries:
+                    raise error
+                time.sleep(self._retry_delay(response, attempt))
+                attempt += 1
+                continue
             if response.status_code >= 400:
                 raise LLMError("LLM request failed", response.status_code, response.text)
             try:
-                return response.json()
+                data = response.json()
             except json.JSONDecodeError as exc:
                 raise LLMError("Invalid JSON in LLM response", response.status_code, response.text) from exc
-        assert last_error is not None  # pragma: no cover
-        raise last_error  # pragma: no cover
+            if not isinstance(data, dict):
+                raise LLMError(
+                    "Invalid LLM response: expected a JSON object",
+                    response.status_code,
+                    response.text,
+                )
+            return data
 
     @staticmethod
     def _retry_delay(response: httpx.Response, attempt: int) -> float:
         retry_after = response.headers.get("Retry-After")
         if retry_after is not None:
             try:
-                return min(float(retry_after), 60.0)
+                delay = float(retry_after)
             except ValueError:
                 pass
+            else:
+                if math.isfinite(delay) and delay >= 0:
+                    return min(delay, 60.0)
         return min(2.0**attempt, 30.0)
 
     @staticmethod

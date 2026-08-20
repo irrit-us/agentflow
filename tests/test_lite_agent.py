@@ -42,6 +42,25 @@ def _client_with_queue(responses: list[dict]) -> LiteLLMClient:
     return LiteLLMClient(base_url="http://testserver/v1", transport=httpx.MockTransport(handler))
 
 
+def test_constructor_validates_backend_configuration_and_runtime_limits():
+    client = _client_with_queue([])
+
+    with pytest.raises(ValueError, match="exactly one"):
+        LiteAgent()
+    with pytest.raises(ValueError, match="exactly one"):
+        LiteAgent(client=client, router=object(), model="test-model", role="test-role")
+    with pytest.raises(ValueError, match="role.*required"):
+        LiteAgent(router=object())
+    with pytest.raises(ValueError, match="model.*required"):
+        LiteAgent(client=client)
+    with pytest.raises(ValueError, match="max_iterations must be at least 1"):
+        LiteAgent(client=client, model="test-model", max_iterations=0)
+    with pytest.raises(ValueError, match="max_tool_iterations must be non-negative"):
+        LiteAgent(client=client, model="test-model", max_tool_iterations=-1)
+    with pytest.raises(ValueError, match="max_total_tokens must be at least 1"):
+        LiteAgent(client=client, model="test-model", max_total_tokens=0)
+
+
 def test_run_single_turn_without_tools():
     client = _client_with_queue([_response("done")])
     agent = LiteAgent(client=client, model="test-model", system_prompt="be brief")
