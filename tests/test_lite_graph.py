@@ -397,3 +397,46 @@ def test_output_idle_trigger_rejects_input_dependencies():
 
     with pytest.raises(ValueError, match="cannot declare input dependencies: invalid"):
         graph.validate_graph()
+
+
+def test_node_spec_max_tool_iterations():
+    from pydantic import ValidationError
+
+    assert NodeSpec(id="n", prompt="p").max_tool_iterations is None
+    assert NodeSpec(id="n", prompt="p", max_tool_iterations=0).max_tool_iterations == 0
+    with pytest.raises(ValidationError):
+        NodeSpec(id="n", prompt="p", max_tool_iterations=-1)
+
+
+def test_render_fanout_container_renders_mounts_and_env():
+    from agentflow.lite import ContainerConfig, Mount, render_fanout_container
+
+    node = NodeSpec(
+        id="aeg",
+        prompt="p",
+        fanout=FanOutSpec(**{"from": "plan"}, item_var="item"),
+        container=ContainerConfig(
+            image="img",
+            env={"ALERT_ID": "{{ item.alert_id }}", "STATIC": "x"},
+            mounts=[
+                Mount(type="volume", source="poc-{{ item.alert_id }}", target="/scratch"),
+                Mount(type="bind", source="./targets", target="/targets", read_only=True),
+            ],
+        ),
+    )
+
+    rendered = render_fanout_container(node.container, node, {"alert_id": "donate"})
+
+    assert rendered.mounts[0].source == "poc-donate"
+    assert rendered.mounts[1].source == "./targets"  # no placeholder: untouched
+    assert rendered.env == {"ALERT_ID": "donate", "STATIC": "x"}
+    # The parent spec is not mutated.
+    assert node.container.mounts[0].source == "poc-{{ item.alert_id }}"
+
+
+def test_render_fanout_container_requires_fanout():
+    from agentflow.lite import ContainerConfig, render_fanout_container
+
+    node = NodeSpec(id="n", prompt="p", container=ContainerConfig(image="img"))
+    with pytest.raises(ValueError, match="does not declare fanout"):
+        render_fanout_container(node.container, node, {})

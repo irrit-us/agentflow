@@ -272,3 +272,62 @@ def test_run_accepts_history():
 
     assert [m.role for m in result.messages] == ["user", "assistant", "user", "assistant"]
     assert result.text == "continued"
+
+
+def test_tool_guard_blocks_call_and_feeds_back_verdict():
+    tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "add", "arguments": '{"a": 2, "b": 3}'},
+    }
+    client = _client_with_queue([
+        _response(None, tool_calls=[tool_call]),
+        _response("blocked, adjusting"),
+    ])
+    executed: list[tuple[int, int]] = []
+    seen_arguments: list[dict] = []
+
+    @tool
+    def add(a: int, b: int) -> int:
+        """Add two integers."""
+        executed.append((a, b))
+        return a + b
+
+    def guard(call):
+        seen_arguments.append(call.arguments)
+        return "blocked by policy: write outside allowed paths"
+
+    agent = LiteAgent(client=client, model="test-model", tools=[add], tool_guard=guard)
+    result = agent.run("add 2 and 3")
+
+    assert executed == []
+    assert seen_arguments == [{"a": 2, "b": 3}]
+    assert result.text == "blocked, adjusting"
+    tool_messages = [m for m in result.messages if m.role == "tool"]
+    assert tool_messages[0].content == "blocked by policy: write outside allowed paths"
+
+
+def test_tool_guard_none_verdict_executes_tool():
+    tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "add", "arguments": '{"a": 2, "b": 3}'},
+    }
+    client = _client_with_queue([
+        _response(None, tool_calls=[tool_call]),
+        _response("the answer is 5"),
+    ])
+
+    @tool
+    def add(a: int, b: int) -> int:
+        """Add two integers."""
+        return a + b
+
+    agent = LiteAgent(
+        client=client, model="test-model", tools=[add], tool_guard=lambda call: None
+    )
+    result = agent.run("add 2 and 3")
+
+    assert result.text == "the answer is 5"
+    tool_messages = [m for m in result.messages if m.role == "tool"]
+    assert tool_messages[0].content == "5"

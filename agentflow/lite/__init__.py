@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agentflow.lite.agent import AgentResult, BudgetExceededError, LiteAgent
+from agentflow.lite.agent import AgentResult, BudgetExceededError, LiteAgent, ToolGuard
 from agentflow.lite.client import LiteLLMClient, LLMError
 from agentflow.lite.concurrency import (
     ConcurrencySnapshot,
@@ -40,7 +40,9 @@ from agentflow.lite.graph import (
     NodeTriggerMode,
     fanout_items,
     load_graph,
+    render_fanout_container,
     render_fanout_prompt,
+    render_item_template,
     resolve_prompt,
 )
 from agentflow.lite.router import ModelProfile, ModelRouter
@@ -115,6 +117,7 @@ __all__ = [
     "Tool",
     "ToolAccessPolicy",
     "ToolCall",
+    "ToolGuard",
     "ToolRegistry",
     "ToolSharingConfig",
     "SharedConcurrencyBudget",
@@ -132,7 +135,9 @@ __all__ = [
     "make_llm_health_probe",
     "mcp_skill",
     "resolve_prompt",
+    "render_fanout_container",
     "render_fanout_prompt",
+    "render_item_template",
     "tool",
     "validate_manifest_graphs",
     "validate_runtime_capability_claims",

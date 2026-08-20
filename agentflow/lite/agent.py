@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict
@@ -8,7 +9,12 @@ from agentflow.lite.client import LiteLLMClient
 from agentflow.lite.router import ModelRouter
 from agentflow.lite.skills import Skill, SkillRegistry
 from agentflow.lite.tools import Tool, ToolRegistry
-from agentflow.lite.types import ChatResult, Message, NodeInput, Usage
+from agentflow.lite.types import ChatResult, Message, NodeInput, ToolCall, Usage
+
+# A tool guard inspects each tool call before dispatch. Returning a string
+# blocks the call: the string is fed back to the model as the tool result
+# instead of executing the tool. Returning None lets the call through.
+ToolGuard = Callable[[ToolCall], "str | None"]
 
 
 class BudgetExceededError(Exception):
@@ -47,6 +53,7 @@ class LiteAgent:
         max_total_tokens: int | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
+        tool_guard: ToolGuard | None = None,
     ):
         if (client is None) == (router is None):
             raise ValueError("pass exactly one of `client` or `router`")
@@ -87,6 +94,7 @@ class LiteAgent:
         self.max_total_tokens = max_total_tokens
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.tool_guard = tool_guard
 
     def _chat(self, messages: list[Message], **extra: Any) -> ChatResult:
         kwargs: dict[str, Any] = dict(extra)
@@ -139,7 +147,11 @@ class LiteAgent:
                 tool_iterations += 1
                 for call in result.message.tool_calls:
                     messages.append(
-                        Message(role="tool", tool_call_id=call.id, content=self.registry.dispatch(call))
+                        Message(
+                            role="tool",
+                            tool_call_id=call.id,
+                            content=self._execute_guarded(call),
+                        )
                     )
                 if (
                     self.max_tool_iterations is not None
@@ -172,6 +184,18 @@ class LiteAgent:
             iterations=iterations,
             finish_reason="max_iterations",
         )
+
+    def _execute_guarded(self, call: ToolCall) -> str:
+        """Run the tool guard (if any) before dispatching a tool call.
+
+        A guard verdict string replaces the tool result, so a blocked call
+        is reported to the model as feedback rather than executed.
+        """
+        if self.tool_guard is not None:
+            verdict = self.tool_guard(call)
+            if verdict is not None:
+                return verdict
+        return self.registry.dispatch(call)
 
     def run(self, user_input: str, history: list[Message] | None = None) -> AgentResult:
         return self._run(user_input, history, None)

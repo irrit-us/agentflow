@@ -23,13 +23,14 @@ from agentflow.lite.graph import (
     GraphSpec,
     NodeSpec,
     fanout_items,
+    render_fanout_container,
     render_fanout_prompt,
     resolve_prompt,
 )
 from agentflow.lite.router import ModelRouter
 from agentflow.lite.skills import SkillRegistry
 from agentflow.lite.tools import ToolRegistry
-from agentflow.lite.types import NodeInput, Usage
+from agentflow.lite.types import NodeInput, ToolCall, Usage
 
 NodeStatus = Literal["preparing", "processing", "finished", "errored"]
 
@@ -344,6 +345,13 @@ class GraphRunner:
                     "prompt": render_fanout_prompt(nrun.spec, item),
                     "depends_on": dependencies,
                     "fanout": None,
+                    # Per-item mount/env rendering gives each child its own
+                    # isolated volumes (e.g. scratch volume per item).
+                    "container": (
+                        render_fanout_container(nrun.spec.container, nrun.spec, item)
+                        if nrun.spec.container is not None
+                        else None
+                    ),
                 },
                 deep=True,
             )
@@ -533,6 +541,8 @@ def make_agent_factory(
     registry: ToolRegistry | None = None,
     skills: SkillRegistry | None = None,
     default_role: str | None = None,
+    tool_guard_factory: Callable[[NodeSpec], Callable[[ToolCall], str | None] | None]
+    | None = None,
 ) -> Callable[[NodeSpec], LiteAgent]:
     if (client is None) == (router is None):
         raise ValueError("pass exactly one of `client` or `router`")
@@ -559,7 +569,11 @@ def make_agent_factory(
             "tools": tools,
             "skills": selected_skills,
             "max_iterations": spec.max_iterations if spec.max_iterations is not None else 8,
+            "max_tool_iterations": spec.max_tool_iterations,
             "max_total_tokens": spec.max_total_tokens,
+            "tool_guard": (
+                tool_guard_factory(spec) if tool_guard_factory is not None else None
+            ),
         }
         if router is not None:
             return LiteAgent(router=router, role=spec.role or default_role, **kwargs)

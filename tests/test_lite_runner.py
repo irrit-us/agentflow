@@ -15,6 +15,7 @@ from agentflow.lite import (
     NodeSpec,
     NodeInput,
     ResourceRequest,
+    ToolCall,
     Usage,
     make_agent_factory,
 )
@@ -715,3 +716,79 @@ def test_node_retries_transient_failure_up_to_max_attempts():
     assert node.error is None
     assert node.attempts == 2
     assert calls == 2
+
+
+def test_runtime_fanout_renders_child_container_mounts_and_env():
+    from agentflow.lite import ContainerConfig, Mount
+
+    graph = GraphSpec(
+        nodes=[
+            NodeSpec(id="plan", prompt="plan"),
+            NodeSpec(
+                id="poc",
+                prompt="poc {{ item.alert_id }}",
+                fanout=FanOutSpec(from_="plan", items_path="alerts", item_var="item"),
+                container=ContainerConfig(
+                    image="img",
+                    env={"ALERT_ID": "{{ item.alert_id }}"},
+                    mounts=[
+                        Mount(
+                            type="volume",
+                            source="poc-{{ item.alert_id }}",
+                            target="/scratch",
+                        )
+                    ],
+                ),
+            ),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        prompt = body["messages"][-1]["content"]
+        if prompt == "plan":
+            content = '{"alerts":[{"alert_id":"a"},{"alert_id":"b"}]}'
+        else:
+            content = "done"
+        return httpx.Response(200, json=_payload(content))
+
+    client = LiteLLMClient(
+        base_url="http://testserver/v1", transport=httpx.MockTransport(handler)
+    )
+    runner = GraphRunner(graph, make_agent_factory(client=client, default_model="m"))
+
+    nodes = runner.run().snapshot()["nodes"]
+
+    assert nodes["poc--0001"].spec.container.mounts[0].source == "poc-a"
+    assert nodes["poc--0002"].spec.container.mounts[0].source == "poc-b"
+    assert nodes["poc--0001"].spec.container.env == {"ALERT_ID": "a"}
+    # The parent (unexpanded) spec keeps its template.
+    assert "{{ item.alert_id }}" in graph.nodes[1].container.mounts[0].source
+
+
+def test_factory_wires_max_tool_iterations_and_tool_guard():
+    seen: list[str] = []
+
+    def guard_factory(spec):
+        def guard(call):
+            seen.append(f"{spec.id}:{call.name}")
+            return None
+
+        return guard
+
+    factory = make_agent_factory(
+        client=_echo_client(), default_model="m", tool_guard_factory=guard_factory
+    )
+
+    agent = factory(NodeSpec(id="n", prompt="p", max_tool_iterations=3))
+
+    assert agent.max_tool_iterations == 3
+    assert agent.tool_guard is not None
+    assert agent.tool_guard(ToolCall(id="c", name="run_command", arguments={})) is None
+    assert seen == ["n:run_command"]
+    # A factory without a guard factory leaves agents unguarded.
+    plain = make_agent_factory(client=_echo_client(), default_model="m")(
+        NodeSpec(id="n", prompt="p")
+    )
+    assert plain.tool_guard is None
+    assert plain.max_tool_iterations is None

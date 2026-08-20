@@ -117,6 +117,29 @@ result = agent.run("What is 40 + 2?")
 print(result.text, result.iterations)
 ```
 
+`max_tool_iterations` caps tool-calling rounds independently of
+`max_iterations`; when it is exhausted, tools are withheld and the model is
+asked for its final answer. Set it to `0` on pure-LLM nodes as a hard
+no-tools guarantee.
+
+A `tool_guard` inspects each tool call before dispatch; returning a string
+blocks the call and feeds the string back as the tool result. Guards wire in
+per node through `make_agent_factory(tool_guard_factory=...)`:
+
+```python
+from agentflow.lite import LiteAgent, make_agent_factory
+
+def guard(call):
+    if call.name == "run_command" and "rm " in str(call.arguments):
+        return "blocked by policy"
+    return None
+
+agent = LiteAgent(client=client, model="gpt-4o-mini", tools=[add],
+                  tool_guard=guard)
+factory = make_agent_factory(client=client, default_model="gpt-4o-mini",
+                             tool_guard_factory=lambda spec: guard)
+```
+
 Skills are independent instruction/Tool bundles. Pass `skills=[...]` directly
 to `LiteAgent`, or pass a `SkillRegistry` to `make_agent_factory` and select
 names with `NodeSpec.skills`. `mcp_skill` adapts any synchronous
@@ -241,6 +264,24 @@ The item placeholder accepts the full item (`{{ item }}`) or dotted object
 fields (`{{ item.id }}`). `max_items` is a guardrail against accidentally
 unbounded plans. A failed child fails the fan-out barrier; `max_attempts`
 retries transient node failures before that happens.
+
+Container mounts and env values are rendered per item too, so each child can
+get its own isolated scratch volume instead of sharing one writable volume
+with all siblings:
+
+```yaml
+  - id: exploit
+    prompt: "Exploit {{ item.alert_id }}"
+    fanout: {from: triage, items_path: alerts, item_var: item}
+    container:
+      image: trailofbits/eth-security-toolbox:latest
+      env: {ALERT_ID: "{{ item.alert_id }}"}
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: "poc-{{ item.alert_id }}", target: /pocs}
+```
+
+Child `poc--0001` mounts volume `poc-<first alert_id>` at `/pocs`, and so on.
 
 ### Resource limits and resume
 

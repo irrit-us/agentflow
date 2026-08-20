@@ -74,6 +74,7 @@ class NodeSpec(BaseModel):
     skills: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
     max_iterations: int | None = Field(default=None, ge=1)
+    max_tool_iterations: int | None = Field(default=None, ge=0)
     max_total_tokens: int | None = Field(default=None, ge=1)
     container: ContainerConfig | None = None
     fanout: FanOutSpec | None = None
@@ -282,14 +283,10 @@ def fanout_items(node: NodeSpec, results: dict[str, AgentResult]) -> list[Any]:
     return value
 
 
-def render_fanout_prompt(node: NodeSpec, item: Any) -> str:
-    """Render ``{{ item }}`` and dotted item fields for one fan-out child."""
-
-    spec = node.fanout
-    if spec is None:
-        raise ValueError(f"node '{node.id}' does not declare fanout")
+def render_item_template(text: str, item_var: str, item: Any, node_id: str) -> str:
+    """Render ``{{ item }}`` and dotted item fields in an arbitrary string."""
     pattern = re.compile(
-        r"\{\{\s*" + re.escape(spec.item_var) + r"(?:\.([A-Za-z0-9_.\-]+))?\s*\}\}"
+        r"\{\{\s*" + re.escape(item_var) + r"(?:\.([A-Za-z0-9_.\-]+))?\s*\}\}"
     )
 
     def replace(match: re.Match[str]) -> str:
@@ -299,11 +296,44 @@ def render_fanout_prompt(node: NodeSpec, item: Any) -> str:
             for part in path.split("."):
                 if not isinstance(value, dict) or part not in value:
                     raise ValueError(
-                        f"fanout item for node '{node.id}' has no field '{path}'"
+                        f"fanout item for node '{node_id}' has no field '{path}'"
                     )
                 value = value[part]
         if isinstance(value, str):
             return value
         return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
-    return pattern.sub(replace, node.prompt)
+    return pattern.sub(replace, text)
+
+
+def render_fanout_prompt(node: NodeSpec, item: Any) -> str:
+    """Render ``{{ item }}`` and dotted item fields for one fan-out child."""
+
+    spec = node.fanout
+    if spec is None:
+        raise ValueError(f"node '{node.id}' does not declare fanout")
+    return render_item_template(node.prompt, spec.item_var, item, node.id)
+
+
+def render_fanout_container(
+    container: ContainerConfig, node: NodeSpec, item: Any
+) -> ContainerConfig:
+    """Render item placeholders in mount sources/targets and env values.
+
+    Lets each fan-out child receive its own isolated volumes (e.g. a
+    per-item scratch volume ``vuln-poc-{{ item.alert_id }}``) instead of
+    sharing one writable volume with all siblings.
+    """
+    spec = node.fanout
+    if spec is None:
+        raise ValueError(f"node '{node.id}' does not declare fanout")
+    rendered = container.model_copy(deep=True)
+    for mount in rendered.mounts:
+        if mount.source is not None:
+            mount.source = render_item_template(mount.source, spec.item_var, item, node.id)
+        mount.target = render_item_template(mount.target, spec.item_var, item, node.id)
+    rendered.env = {
+        key: render_item_template(value, spec.item_var, item, node.id)
+        for key, value in rendered.env.items()
+    }
+    return rendered
