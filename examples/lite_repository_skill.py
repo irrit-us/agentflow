@@ -76,7 +76,8 @@ def search_python(pattern: str, path: str = "agentflow/lite") -> str:
             if pattern not in line:
                 continue
             excerpt = line.strip()[:MAX_RESULT_LINE_LENGTH]
-            hits.append(f"{resolved.relative_to(ROOT)}:{lineno}: {excerpt}")
+            relative = resolved.relative_to(ROOT).as_posix()
+            hits.append(f"{relative}:{lineno}: {excerpt}")
             if len(hits) >= MAX_SEARCH_HITS:
                 break
     return "\n".join(hits) or "no matches"
