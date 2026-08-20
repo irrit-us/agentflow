@@ -248,10 +248,24 @@ def fanout_items(node: NodeSpec, results: dict[str, AgentResult]) -> list[Any]:
         )
     try:
         value: Any = json.loads(result.text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"fanout source '{spec.from_}' did not return valid JSON: {exc.msg}"
-        ) from exc
+    except json.JSONDecodeError as direct_exc:
+        # OpenAI-compatible models sometimes obey the JSON schema but wrap it
+        # in one Markdown code fence, occasionally with a short preamble. Keep
+        # this fallback narrow: accept only a single fenced block that itself
+        # parses as JSON; never heuristically slice arbitrary braces.
+        fences = re.findall(r"```(?:json)?\s*(.*?)```", result.text, re.DOTALL | re.IGNORECASE)
+        if len(fences) != 1:
+            raise ValueError(
+                f"fanout source '{spec.from_}' did not return valid JSON: "
+                f"{direct_exc.msg}"
+            ) from direct_exc
+        try:
+            value = json.loads(fences[0])
+        except json.JSONDecodeError as fenced_exc:
+            raise ValueError(
+                f"fanout source '{spec.from_}' did not return valid JSON: "
+                f"{fenced_exc.msg}"
+            ) from fenced_exc
     if spec.items_path:
         for part in spec.items_path.split("."):
             if not isinstance(value, dict) or part not in value:

@@ -93,6 +93,8 @@ class TestRun:
         assert result == ExecResult(exit_code=0, stdout="hello\n", stderr="warn\n")
         assert seen["kwargs"]["capture_output"] is True
         assert seen["kwargs"]["text"] is True
+        assert seen["kwargs"]["encoding"] == "utf-8"
+        assert seen["kwargs"]["errors"] == "replace"
         assert seen["kwargs"]["timeout"] == 120
 
     def test_timeout(self, monkeypatch: pytest.MonkeyPatch):

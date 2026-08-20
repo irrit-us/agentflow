@@ -43,6 +43,7 @@ class LiteAgent:
         tools: list[Tool] | ToolRegistry | None = None,
         skills: list[Skill] | SkillRegistry | None = None,
         max_iterations: int = 8,
+        max_tool_iterations: int | None = None,
         max_total_tokens: int | None = None,
         temperature: float | None = None,
         max_tokens: int | None = None,
@@ -76,14 +77,18 @@ class LiteAgent:
         skill_tools = self.skills.tool_registry()
         self.registry = ToolRegistry.combine(tool_registry, skill_tools)
         self.max_iterations = max_iterations
+        if max_tool_iterations is not None and max_tool_iterations < 0:
+            raise ValueError("max_tool_iterations must be non-negative")
+        self.max_tool_iterations = max_tool_iterations
         self.max_total_tokens = max_total_tokens
         self.temperature = temperature
         self.max_tokens = max_tokens
 
     def _chat(self, messages: list[Message], **extra: Any) -> ChatResult:
         kwargs: dict[str, Any] = dict(extra)
+        disable_tools = bool(kwargs.pop("_disable_tools", False))
         tools = self.registry.to_openai_tools()
-        if tools:
+        if tools and not disable_tools:
             kwargs["tools"] = tools
         if self.temperature is not None:
             kwargs["temperature"] = self.temperature
@@ -109,18 +114,41 @@ class LiteAgent:
         usage = Usage()
         last_result: ChatResult | None = None
         iterations = 0
+        tool_iterations = 0
         for _ in range(self.max_iterations):
             iterations += 1
-            result = self._chat(messages, **(extra or {}))
+            disable_tools = (
+                self.max_tool_iterations is not None
+                and tool_iterations >= self.max_tool_iterations
+            )
+            result = self._chat(
+                messages,
+                _disable_tools=disable_tools,
+                **(extra or {}),
+            )
             usage = usage + result.usage
             if self.max_total_tokens is not None and usage.total_tokens > self.max_total_tokens:
                 raise BudgetExceededError(usage)
             last_result = result
             messages.append(result.message)
             if result.message.tool_calls:
+                tool_iterations += 1
                 for call in result.message.tool_calls:
                     messages.append(
                         Message(role="tool", tool_call_id=call.id, content=self.registry.dispatch(call))
+                    )
+                if (
+                    self.max_tool_iterations is not None
+                    and tool_iterations >= self.max_tool_iterations
+                ):
+                    messages.append(
+                        Message(
+                            role="user",
+                            content=(
+                                "The tool-iteration budget is exhausted. Return the "
+                                "required final answer now without any more tool calls."
+                            ),
+                        )
                     )
                 continue
             return AgentResult(

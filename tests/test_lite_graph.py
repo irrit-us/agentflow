@@ -285,6 +285,29 @@ def test_fanout_rejects_invalid_source_shape_and_limit():
         fanout_items(node, {"plan": _result("[1, 2]")})
 
 
+def test_fanout_accepts_one_json_markdown_fence():
+    node = NodeSpec(
+        id="audit",
+        prompt="{{ item }}",
+        fanout=FanOutSpec(from_="plan", items_path="tasks"),
+    )
+    result = _result('Here is the result:\n```json\n{"tasks":[{"id":"A"}]}\n```')
+
+    assert fanout_items(node, {"plan": result}) == [{"id": "A"}]
+
+
+def test_fanout_rejects_ambiguous_multiple_fences():
+    node = NodeSpec(
+        id="audit",
+        prompt="{{ item }}",
+        fanout=FanOutSpec(from_="plan", items_path="tasks"),
+    )
+    result = _result('```json\n{"tasks":[]}\n```\n```json\n{"tasks":[]}\n```')
+
+    with pytest.raises(ValueError, match="valid JSON"):
+        fanout_items(node, {"plan": result})
+
+
 def test_validate_rejects_invalid_fanout_item_variable():
     graph = GraphSpec(
         nodes=[

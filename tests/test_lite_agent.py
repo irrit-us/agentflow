@@ -168,6 +168,49 @@ def test_run_stops_at_max_iterations():
     assert result.finish_reason == "max_iterations"
 
 
+def test_run_disables_tools_after_tool_iteration_budget():
+    requests: list[dict] = []
+    tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "noop", "arguments": "{}"},
+    }
+    responses = [
+        _response(None, tool_calls=[tool_call]),
+        _response(None, tool_calls=[{**tool_call, "id": "call_2"}]),
+        _response("final"),
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=responses[len(requests) - 1])
+
+    @tool
+    def noop() -> str:
+        """Do nothing."""
+
+        return "ok"
+
+    client = LiteLLMClient(
+        base_url="http://testserver/v1", transport=httpx.MockTransport(handler)
+    )
+    agent = LiteAgent(
+        client=client,
+        model="test-model",
+        tools=[noop],
+        max_iterations=4,
+        max_tool_iterations=2,
+    )
+
+    result = agent.run("use bounded tools")
+
+    assert result.text == "final"
+    assert "tools" in requests[0] and "tools" in requests[1]
+    assert "tools" not in requests[2]
+    assert requests[2]["messages"][-1]["role"] == "user"
+    assert "tool-iteration budget is exhausted" in requests[2]["messages"][-1]["content"]
+
+
 def test_run_raises_budget_exceeded_with_usage():
     client = _client_with_queue([_response("expensive")])
     agent = LiteAgent(client=client, model="test-model", max_total_tokens=10)
