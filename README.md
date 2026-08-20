@@ -13,8 +13,8 @@ is preserved in [`docs/readme.old.md`](docs/readme.old.md).
 
 ## Components
 
-- **AgentFlow core** — DAG orchestration for Codex, Claude, Kimi, DeepSeek
-  Harness, ZCode, and other external coding-agent CLIs.
+- **AgentFlow core** — DAG orchestration for Codex, Claude, Kimi, Kilo Code,
+  OpenCode, DeepSeek Harness, ZCode, and other external coding-agent CLIs.
 - **AgentFlow Lite** — direct OpenAI-compatible HTTP, tool calling, YAML DAGs,
   optional Docker execution, and a read-only monitor.
 - **Paper architectures** — buildable graph declarations for 47 published

@@ -45,6 +45,7 @@ class AgentKind(StrEnum):
     KIMI = "kimi"
     PI = "pi"
     OPENCODE = "opencode"
+    KILO = "kilo"
     GOOSE = "goose"
     PYTHON = "python"
     SHELL = "shell"
@@ -284,14 +285,24 @@ def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind)
         return ProviderConfig(name=value)
 
     alias = value.strip().lower()
-    if alias == "openai" and resolved_agent in {AgentKind.CODEX, AgentKind.OPENCODE, AgentKind.GOOSE}:
+    if alias == "openai" and resolved_agent in {
+        AgentKind.CODEX,
+        AgentKind.OPENCODE,
+        AgentKind.KILO,
+        AgentKind.GOOSE,
+    }:
         return ProviderConfig(
             name="openai",
             base_url="https://api.openai.com/v1",
             api_key_env="OPENAI_API_KEY",
             wire_api="responses",
         )
-    if alias == "anthropic" and resolved_agent in {AgentKind.CLAUDE, AgentKind.OPENCODE, AgentKind.GOOSE}:
+    if alias == "anthropic" and resolved_agent in {
+        AgentKind.CLAUDE,
+        AgentKind.OPENCODE,
+        AgentKind.KILO,
+        AgentKind.GOOSE,
+    }:
         return ProviderConfig(
             name="anthropic",
             base_url="https://api.anthropic.com",

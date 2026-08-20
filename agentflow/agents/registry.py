@@ -5,6 +5,7 @@ from agentflow.agents.claude import ClaudeAdapter
 from agentflow.agents.codex import CodexAdapter
 from agentflow.agents.deepseek import DeepSeekAdapter
 from agentflow.agents.goose import GooseAdapter
+from agentflow.agents.kilo import KiloAdapter
 from agentflow.agents.kimi import KimiAdapter
 from agentflow.agents.opencode import OpenCodeAdapter
 from agentflow.agents.pi import PiAdapter
@@ -23,6 +24,7 @@ class AdapterRegistry:
             AgentKind.KIMI: KimiAdapter(),
             AgentKind.PI: PiAdapter(),
             AgentKind.OPENCODE: OpenCodeAdapter(),
+            AgentKind.KILO: KiloAdapter(),
             AgentKind.GOOSE: GooseAdapter(),
             AgentKind.PYTHON: PythonAdapter(),
             AgentKind.SHELL: ShellAdapter(),

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from typing import ClassVar
 
 from agentflow.agents.base import AgentAdapter
 from agentflow.env import merge_env_layers
@@ -28,9 +29,14 @@ class OpenCodeAdapter(AgentAdapter):
     invoked as ``<provider>/<model>``.
     """
 
+    executable_name: ClassVar[str] = "opencode"
+    config_filename: ClassVar[str] = "opencode.json"
+    config_env_var: ClassVar[str] = "OPENCODE_CONFIG"
+    trace_kind: ClassVar[str] = "opencode"
+
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         provider = self.provider_config(node.provider, node.agent)
-        executable = node.executable or "opencode"
+        executable = node.executable or self.executable_name
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
         command = [executable, "run", "--format", "json", "--auto"]
 
@@ -89,9 +95,9 @@ class OpenCodeAdapter(AgentAdapter):
             config["mcp"] = mcp_payload
 
         if config:
-            relative_path = self.relative_runtime_file("opencode.json")
+            relative_path = self.relative_runtime_file(self.config_filename)
             runtime_files[relative_path] = json.dumps(config, ensure_ascii=False, indent=2)
-            env["OPENCODE_CONFIG"] = self.target_path(paths, relative_path)
+            env[self.config_env_var] = self.target_path(paths, relative_path)
 
         if node.model:
             model_ref = node.model
@@ -108,7 +114,6 @@ class OpenCodeAdapter(AgentAdapter):
             command=command,
             env=env,
             cwd=cwd,
-            trace_kind="opencode",
+            trace_kind=self.trace_kind,
             runtime_files=runtime_files,
         )
-

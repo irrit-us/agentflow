@@ -345,7 +345,7 @@ class PiTraceParser(BaseTraceParser):
 
 @dataclass(slots=True)
 class OpenCodeTraceParser(BaseTraceParser):
-    """Parser for the OpenCode CLI's ``--format json`` NDJSON event stream.
+    """Parser for OpenCode-compatible ``--format json`` NDJSON event streams.
 
     OpenCode emits ``message.part.updated`` (full text snapshot per part),
     optionally ``message.part.delta`` (incremental delta), ``message.updated``
@@ -380,7 +380,7 @@ class OpenCodeTraceParser(BaseTraceParser):
         inner = payload
         if "type" not in payload and isinstance(payload.get("payload"), dict) and "type" in payload["payload"]:
             inner = payload["payload"]
-        event_type = inner.get("type") or "opencode"
+        event_type = inner.get("type") or self.agent.value
         events: list[NormalizedTraceEvent] = []
 
         if event_type in {"step_start", "step_finish"}:
@@ -609,6 +609,8 @@ def create_trace_parser(agent: AgentKind, node_id: str) -> BaseTraceParser:
         case AgentKind.PI:
             return PiTraceParser(node_id=node_id, agent=agent)
         case AgentKind.OPENCODE:
+            return OpenCodeTraceParser(node_id=node_id, agent=agent)
+        case AgentKind.KILO:
             return OpenCodeTraceParser(node_id=node_id, agent=agent)
         case AgentKind.GOOSE:
             return GooseTraceParser(node_id=node_id, agent=agent)

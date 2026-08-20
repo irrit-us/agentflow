@@ -522,6 +522,16 @@ def opencode(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     return _node(AgentKind.OPENCODE, task_id=task_id, prompt=prompt, **kwargs)
 
 
+def kilo(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
+    """Run the Kilo Code CLI (https://kilo.ai).
+
+    Streams ``kilo run --format json --auto`` events into the trace. MCP
+    servers declared on the node are materialized into a per-node ``kilo.json``
+    and passed via ``KILO_CONFIG``.
+    """
+    return _node(AgentKind.KILO, task_id=task_id, prompt=prompt, **kwargs)
+
+
 def goose(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     """Run the Goose CLI (https://block.github.io/goose).
 
