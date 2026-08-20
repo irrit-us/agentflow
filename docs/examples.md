@@ -17,6 +17,7 @@
 | `airflow_like.py` | You want the smallest Python-authored DAG reference. | Static dependencies with `plan >> [implement, review]`. |
 | `airflow_like_fuzz_batched.py` | You want a large shard campaign driven by count fanout, batch merge, and a periodic monitor. | `fanout(node, 128)`, `merge(node, src, size=16)`, `schedule.every_seconds`. |
 | `airflow_like_fuzz_grouped.py` | You want a large shard campaign driven by matrix fanout and grouped merge. | `fanout(node, {...})`, `merge(node, src, by=[...])`. |
+| `docker_target.py` | You want to inspect or run the bundled coding-agent image. | Offline networking, a read-only workspace, 512 MiB memory, one CPU, and a 120-second timeout by default. |
 
 ## Lite Examples
 

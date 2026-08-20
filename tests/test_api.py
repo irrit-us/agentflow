@@ -4,10 +4,12 @@ import asyncio
 import json
 import os
 
+import pytest
 from fastapi.testclient import TestClient
 
 from agentflow.app import create_app
 from agentflow.orchestrator import Orchestrator
+from agentflow.specs import RunRecord
 from agentflow.store import RunStore
 from tests.test_orchestrator import make_orchestrator
 
@@ -184,6 +186,110 @@ def test_api_validate_supports_pipeline_path_payload_when_explicitly_enabled(tmp
     assert payload["working_dir"] == str(pipeline_dir.resolve())
     assert payload["nodes"][0]["target"]["cwd"] == str((pipeline_dir / "task").resolve())
 
+
+
+def test_api_rejects_inline_executable_agents_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("AGENTFLOW_API_ALLOW_EXECUTABLE_AGENTS", raising=False)
+    orchestrator = make_orchestrator(tmp_path)
+    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
+    client = TestClient(app)
+    payload = {
+        "pipeline": {
+            "name": "shell-rce",
+            "working_dir": str(tmp_path),
+            "nodes": [{"id": "shell", "agent": "shell", "prompt": "echo unsafe"}],
+        }
+    }
+
+    for endpoint in ("/api/runs/validate", "/api/runs"):
+        response = client.post(endpoint, json=payload)
+        assert response.status_code == 403
+        assert response.json()["detail"] == "executable agents are disabled for the web API by default"
+
+
+def test_api_allows_inline_executable_agents_when_explicitly_enabled(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENTFLOW_API_ALLOW_EXECUTABLE_AGENTS", "1")
+    orchestrator = make_orchestrator(tmp_path)
+    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/runs/validate",
+        json={
+            "pipeline": {
+                "name": "python-opt-in",
+                "working_dir": str(tmp_path),
+                "nodes": [{"id": "py", "agent": "python", "prompt": "print('trusted')"}],
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["pipeline"]["nodes"][0]["agent"] == "python"
+
+
+def test_api_rejects_artifact_path_traversal(tmp_path):
+    orchestrator = make_orchestrator(tmp_path)
+    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
+    client = TestClient(app)
+
+    outside_secret = tmp_path / "secret.txt"
+    outside_secret.write_text("outside-runs-secret", encoding="utf-8")
+    create = client.post(
+        "/api/runs",
+        json={
+            "pipeline": {
+                "name": "artifact",
+                "working_dir": str(tmp_path),
+                "nodes": [{"id": "alpha", "agent": "codex", "prompt": "artifact output"}],
+            }
+        },
+    )
+    run_id = create.json()["id"]
+    asyncio.run(orchestrator.wait(run_id, timeout=5))
+
+    assert client.get(f"/api/runs/{run_id}/artifacts/%2E%2E/run.json").status_code == 400
+    assert client.get("/api/runs/%2E%2E/artifacts/%2E%2E/secret.txt").status_code == 400
+
+
+async def test_store_create_run_rejects_invalid_run_id_atomically(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    record = RunRecord(
+        id="../outside",
+        pipeline={"name": "p", "nodes": [{"id": "alpha", "agent": "codex", "prompt": "hi"}]},
+    )
+
+    with pytest.raises(ValueError, match="path segment"):
+        await store.create_run(record)
+
+    assert store.list_runs() == []
+    assert not (tmp_path / "outside").exists()
+
+
+async def test_store_rejects_artifact_write_path_traversal(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    await store.create_run(
+        RunRecord(
+            id="run",
+            pipeline={"name": "p", "nodes": [{"id": "alpha", "agent": "codex", "prompt": "hi"}]},
+        )
+    )
+
+    with pytest.raises(ValueError, match="path segment"):
+        await store.write_artifact_text("run", "../../outside", "output.txt", "pwned")
+    assert not (tmp_path / "outside" / "output.txt").exists()
+
+
+def test_store_rejects_artifact_read_path_traversal(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    outside_secret = tmp_path / "secret.txt"
+    outside_secret.write_text("outside-runs-secret", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="path segment"):
+        store.read_artifact_text("..", "..", "secret.txt")
+
+    with pytest.raises(ValueError, match="path segment"):
+        store.read_artifact_text("run", "alpha", "secret\x00.txt")
 
 
 def test_api_rejects_non_json_content_type(tmp_path):

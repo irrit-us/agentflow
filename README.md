@@ -49,6 +49,23 @@ print(graph.to_json())
 agentflow run pipeline.py --output summary
 ```
 
+## Structured Docker execution
+
+Core AgentFlow nodes can run in the bundled Docker target as well as through
+the older per-agent container images. Build the bundled runtime once:
+
+```bash
+docker build -t agentflow-agents:latest .
+```
+
+`target={"kind": "docker"}` starts audit-safe by default: no network, a
+read-only workspace and explicit mounts, 512 MiB of memory, 1 CPU, a
+120-second node timeout, no inherited host credentials, and no Docker-daemon
+access. The image includes Codex, Claude, Kimi, Kilo Code, Pi, and Docker
+tooling. See the [Docker target reference](docs/pipelines.md#docker) for
+deliberate opt-ins such as provider network access, writable mounts, host
+daemon mounting, and Docker-in-Docker.
+
 ## Documentation
 
 - [Documentation index](docs/README.md)

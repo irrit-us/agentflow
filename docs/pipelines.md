@@ -49,7 +49,7 @@ Each node supports:
 - `repo_instructions_mode`: `inherit` (default) or `ignore` for agent CLIs that should not absorb repo-local instruction files such as `AGENTS.md`, `CLAUDE.md`, or project skills
 - `mcps`: a list of MCP server definitions
 - `skills`: a list of local skill paths or names
-- `target`: `local`, `container`, `ssh`, `ec2`, or `ecs`
+- `target`: `local`, `docker`, `container`, `ssh`, `ec2`, or `ecs`
 - local target fields: `cwd`, `bootstrap`, `shell`, `shell_login`, `shell_interactive`, and `shell_init`
 - `capture`: `final` or `trace`
 - `retries` and `retry_backoff_seconds`
@@ -273,6 +273,152 @@ DAG(
 
 If one local node should not inherit the shared bootstrap, set `target={"bootstrap": None}` on that node.
 `shell_init` is treated as a bootstrap prerequisite: if it exits non-zero, AgentFlow does not launch the wrapped agent command.
+
+### Docker
+
+The structured Docker target runs a node in a local container with explicit
+mount, network, resource, credential, privilege, and daemon-access policies.
+Build the bundled image before using the default target:
+
+```bash
+docker build -t agentflow-agents:latest .
+```
+
+The image contains AgentFlow, Codex, Claude, Kimi, Kilo Code, Pi, the Docker
+CLI, and a Docker daemon for explicit Docker-in-Docker use. It does not contain
+model-provider credentials.
+
+This offline example relies entirely on the audit-safe defaults:
+
+```python
+from agentflow import Graph, shell
+
+with Graph("docker-audit", working_dir=".") as graph:
+    shell(
+        task_id="inventory",
+        script="git status --short",
+        target={"kind": "docker"},
+    )
+
+print(graph.to_json())
+```
+
+The defaults are intentionally restrictive:
+
+| Policy | Default | Deliberate override |
+| --- | --- | --- |
+| Workspace mount | Read-only | `workdir_read_only: false` |
+| Additional mounts | Read-only | `read_only: false` on that mount |
+| Network | `none` | `network_policy: bridge`, `host`, or a named custom network |
+| Memory | `512m` | another Docker memory value, or `null` to remove the limit |
+| CPUs | `1` | another positive CPU count, or `null` to remove the limit |
+| Node timeout | 120 seconds | node-level `timeout_seconds` |
+| Host CLI credentials | Not inherited | `inherit_credentials: true` for adapter-selected read-only files |
+| Docker daemon | Not mounted | `mount_docker_daemon: true` or privileged `dind: true` |
+
+Model-backed agents normally need a deliberate network policy and an explicit
+credential source. Sensitive environment values are passed through a private,
+temporary Docker env file rather than `docker run` arguments:
+
+```python
+from agentflow import Graph, kilo
+
+with Graph("docker-review", working_dir=".") as graph:
+    kilo(
+        task_id="review",
+        prompt="Review the repository without modifying it.",
+        tools="read_only",
+        provider="openai",
+        env={"OPENAI_API_KEY": "replace-at-runtime"},
+        target={
+            "kind": "docker",
+            "network_policy": "bridge",
+        },
+    )
+
+print(graph.to_json())
+```
+
+Do not put literal production secrets in a pipeline file; inject them when the
+pipeline is assembled. Docker targets do not implicitly copy ambient API keys
+or host CLI homes. Codex can expose its selected login/config files as
+read-only runtime mounts only when `inherit_credentials: true` is set.
+
+Docker target fields include:
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `image` | `agentflow-agents:latest` | Image used for the node. |
+| `engine` | `docker` | Docker CLI executable. |
+| `workdir_mount` | `/workspace` | Container path for the pipeline workspace. |
+| `runtime_mount` | `/agentflow-runtime` | Writable per-node runtime path used for generated adapter files. |
+| `app_mount` | `null` | Optional read-only mount of the local AgentFlow checkout. |
+| `workdir_read_only` | `true` | Whether the managed workspace bind is read-only. |
+| `user` | `host` | Run as the invoking UID:GID; use a Docker user value or `null` for the image default. |
+| `memory` | `512m` | Docker memory limit; use `null` to omit it. |
+| `cpus` | `1` | Docker CPU limit; use `null` to omit it. |
+| `mounts` | `[]` | Additional binds with `source`, absolute `target`, and optional `read_only` (default `true`). |
+| `network_policy` | `none` | `none`, `bridge`, `host`, or a custom-network object. |
+| `privileged` | `false` | Pass `--privileged`; this substantially weakens host isolation. |
+| `mount_docker_daemon` | `false` | Bind a local Unix Docker socket into the container. |
+| `docker_daemon_socket` | auto | Absolute host socket override used with `mount_docker_daemon`. |
+| `dind` | `false` | Start the bundled daemon; requires `privileged: true`. |
+| `entrypoint` | image default | Override the image entrypoint; unavailable for bundled-image DinD. |
+| `extra_args` | `[]` | Allowlisted runtime options; mounts, network, privilege, CPU, and memory must use structured fields. |
+
+Every node receives a workspace bind and a writable, per-run runtime bind. The
+runtime exception is necessary for generated provider/MCP configuration and
+trace support; it remains writable when the workspace is read-only. Relative
+additional mount sources resolve from pipeline `working_dir`. Mount targets
+must be absolute and cannot overlap managed paths or each other. AgentFlow also
+rejects a writable alias of a managed read-only workspace/app mount.
+
+To persist intentional output, mount a separate host directory read/write:
+
+```python
+target = {
+    "kind": "docker",
+    "mounts": [
+        {
+            "source": "/var/tmp/agentflow-output",
+            "target": "/output",
+            "read_only": False,
+        }
+    ],
+}
+```
+
+`network_policy` accepts `none`, `bridge`, or `host` shorthand. Any other
+string names a pre-created custom Docker network. The object form additionally
+supports `aliases`, `dns`, and validated `add_hosts` entries. These settings
+affect attachment and name resolution; they are not destination allowlists.
+Use an operator-managed proxy/firewall on a custom network when egress must be
+restricted by address, port, or domain.
+
+`mount_docker_daemon: true` is effectively root-level control of the Docker
+host, even with a read-only workspace and a non-root container user. AgentFlow
+accepts only a local Unix endpoint, validates the socket before execution, and
+prevents ordinary explicit mounts from exposing the active socket or a parent
+directory. Use this mode only for trusted images, prompts, and inputs.
+
+`dind: true` starts an independent daemon inside the agent container. It
+requires `privileged: true`, cannot be combined with a host-daemon mount or a
+custom entrypoint, and is still not a security boundary for untrusted work.
+The bundled entrypoint starts the daemon as root and then drops the agent
+command to the configured identity.
+
+The smoke graph supports isolated, host-daemon, and DinD modes without calling
+a model provider:
+
+```bash
+agentflow run examples/docker_target.py --output summary
+AGENTFLOW_DOCKER_MODE=daemon agentflow run examples/docker_target.py --output summary
+AGENTFLOW_DOCKER_MODE=dind agentflow run examples/docker_target.py --output summary
+```
+
+Use `kind: "container"` for compatibility with existing per-agent images.
+That legacy target keeps its earlier behavior and validation; the new Docker
+target does not silently change existing pipelines.
 
 ### Container
 

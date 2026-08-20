@@ -158,7 +158,7 @@ def _payload_summary(node_plan: dict[str, Any]) -> str | None:
     payload = launch.get("payload")
     if not isinstance(payload, dict):
         return None
-    if launch["kind"] == "container":
+    if launch["kind"] in ("container", "docker"):
         image = payload.get("image")
         engine = payload.get("engine")
         if image and engine:
@@ -312,8 +312,10 @@ def _auth_summary(
     launch_env: dict[str, str] | None = None,
     *,
     cwd: str | None = None,
+    prepared_env: dict[str, str] | None = None,
+    prepared_runtime_symlinks: dict[str, str] | None = None,
 ) -> str | None:
-    api_key_env, provider_name = _resolved_auth_requirement(node)
+    api_key_env, _provider_name = _resolved_auth_requirement(node)
     if not api_key_env:
         return None
 
@@ -388,6 +390,46 @@ def _auth_summary(
             api_key_env,
             ("`provider.env`", "provider.env"),
             helper_bootstrap_source,
+        )
+
+    if getattr(target, "kind", None) == "docker":
+        docker_env = prepared_env or {}
+        prepared_key = next(
+            (
+                key
+                for key in (
+                    api_key_env,
+                    "ANTHROPIC_API_KEY" if node.agent == AgentKind.CLAUDE else "",
+                    "KIMI_API_KEY" if node.agent == AgentKind.KIMI else "",
+                )
+                if key and _has_nonempty_env_value(docker_env, key)
+            ),
+            None,
+        )
+        if prepared_key is not None:
+            if prepared_key == api_key_env:
+                return f"`{api_key_env}` via adapter-prepared Docker environment"
+            return (
+                f"`{prepared_key}` prepared for Docker from `{api_key_env}` by the "
+                f"{normalize_agent_name(node.agent)} adapter"
+            )
+
+        runtime_symlinks = prepared_runtime_symlinks or {}
+        inherits_codex_login = node.agent == AgentKind.CODEX and any(
+            Path(relative_path).as_posix().endswith("codex_home/auth.json")
+            for relative_path in runtime_symlinks
+        )
+        if inherits_codex_login:
+            return "Codex CLI login via `target.inherit_credentials`"
+
+        if node.agent == AgentKind.CODEX:
+            return (
+                "Docker target expects `OPENAI_API_KEY` via `node.env`/`provider.env`, or a Codex CLI login "
+                "via `target.inherit_credentials`; current environment and host CLI homes are not inherited"
+            )
+        return (
+            f"Docker target expects `{api_key_env}` via `node.env` or `provider.env`; current environment "
+            "and host CLI homes are not inherited"
         )
 
     if str(os.getenv(api_key_env, "")).strip():
@@ -579,6 +621,29 @@ def _target_warnings(
     cwd: str | None = None,
 ) -> list[str]:
     warnings: list[str] = []
+
+    if target.get("kind") == "docker":
+        if target.get("mount_docker_daemon"):
+            warnings.append(
+                "Mounting the Docker daemon socket grants the container effective root-level control of "
+                "the Docker host and can bypass its mount and network policy."
+            )
+        if target.get("inherit_credentials"):
+            warnings.append(
+                "Docker credential inheritance exposes adapter-selected host credential/config files to the "
+                "container as read-only bind mounts."
+            )
+        if target.get("privileged"):
+            warnings.append(
+                "Privileged Docker execution disables most container isolation and can bypass its mount "
+                "and network policy."
+            )
+        network_policy = target.get("network_policy")
+        if isinstance(network_policy, dict) and network_policy.get("mode") == "host":
+            warnings.append(
+                "Docker host networking shares the host network namespace; the container can reach host-local "
+                "listeners and is not network-isolated."
+            )
 
     effective_home = target_bash_home(target, env=launch_env, cwd=cwd)
 
@@ -935,6 +1000,11 @@ def _launch_env_inheritance_details(
     *,
     cwd: str | None = None,
 ) -> list[dict[str, Any]]:
+    # Docker receives only variables emitted through its env file. The Docker
+    # CLI inheriting a host variable does not put it inside the container.
+    if getattr(node.target, "kind", None) == "docker":
+        return []
+
     key = _ambient_base_url_env_key(node)
     if key is None:
         return []
@@ -1048,7 +1118,11 @@ def build_launch_inspection(
                 "command_text": _command_text(prepared.command),
                 "cwd": prepared.cwd,
                 "trace_kind": prepared.trace_kind,
-                "env": _sanitize_env(prepared.env),
+                "env": (
+                    {key: _REDACTED for key in sorted(prepared.env)}
+                    if execution_node.target.kind == "docker"
+                    else _sanitize_env(prepared.env)
+                ),
                 "env_keys": sorted(prepared.env),
                 "stdin": _preview_text(prepared.stdin, limit=120),
                 "runtime_files": sorted(prepared.runtime_files),
@@ -1066,7 +1140,14 @@ def build_launch_inspection(
             },
         }
         launch_env = _local_launch_env(node, resolved_provider)
-        auth_summary = _auth_summary(node, resolved_provider, launch_env, cwd=prepared.cwd)
+        auth_summary = _auth_summary(
+            node,
+            resolved_provider,
+            launch_env,
+            cwd=prepared.cwd,
+            prepared_env=prepared.env,
+            prepared_runtime_symlinks=prepared.runtime_symlinks,
+        )
         if auth_summary:
             node_plan["auth"] = auth_summary
         bootstrap_summary = _bootstrap_summary(node_plan["target"], prepared.env, cwd=prepared.cwd)
