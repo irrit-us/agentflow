@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import uuid
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -77,9 +78,15 @@ class DockerExecutor:
         command: str,
         workdir: str | None = None,
         env: dict[str, str] | None = None,
+        container_name: str | None = None,
     ) -> list[str]:
         config = self.config
         argv = [self.docker_bin, "run", "--rm", "--init", "-i"]
+        if container_name is not None:
+            # A stable name lets a timeout path find and remove the container:
+            # killing the foreground CLI does not stop the daemon-side
+            # container, so an unnamed one would leak.
+            argv += ["--name", container_name]
         argv += ["--network", config.network]
         if config.memory is not None:
             argv += ["--memory", config.memory]
@@ -98,6 +105,18 @@ class DockerExecutor:
         argv += [config.image, "sh", "-c", command]
         return argv
 
+    def _force_remove(self, container_name: str) -> str:
+        """Best-effort container cleanup after a timeout; never raises."""
+        try:
+            subprocess.run(
+                [self.docker_bin, "rm", "-f", container_name],
+                capture_output=True,
+                timeout=10,
+            )
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            return f"\n[warning: failed to remove container {container_name}: {exc}]"
+        return f"\n[container {container_name} force-removed after timeout]"
+
     def run(
         self,
         command: str,
@@ -106,7 +125,9 @@ class DockerExecutor:
         timeout: int | None = None,
     ) -> ExecResult:
         effective_timeout = timeout if timeout is not None else self.config.timeout
-        argv = self.build_argv(command, workdir=workdir, env=env)
+        container_name = f"agentflow-lite-{uuid.uuid4().hex[:12]}"
+        argv = self.build_argv(command, workdir=workdir, env=env,
+                               container_name=container_name)
         try:
             completed = subprocess.run(
                 argv,
@@ -117,11 +138,15 @@ class DockerExecutor:
                 timeout=effective_timeout,
             )
         except subprocess.TimeoutExpired as exc:
+            # subprocess.run kills the foreground docker CLI on timeout, but
+            # the daemon-side container keeps running; remove it by name.
+            cleanup_note = self._force_remove(container_name)
             return ExecResult(
                 exit_code=-1,
                 stdout=_truncate(_as_text(exc.stdout)),
                 stderr=_truncate(_as_text(exc.stderr))
-                + f"\n[command timed out after {effective_timeout}s]",
+                + f"\n[command timed out after {effective_timeout}s]"
+                + cleanup_note,
                 timed_out=True,
             )
         except (FileNotFoundError, OSError) as exc:

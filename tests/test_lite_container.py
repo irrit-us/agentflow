@@ -76,6 +76,14 @@ class TestBuildArgv:
         assert "--memory" not in argv
         assert "--cpus" not in argv
 
+    def test_container_name_adds_name_flag(self):
+        argv = _executor().build_argv("ls", container_name="gos-test-1")
+
+        assert argv[argv.index("--name") + 1] == "gos-test-1"
+
+    def test_container_name_omitted_by_default(self):
+        assert "--name" not in _executor().build_argv("ls")
+
 
 class TestRun:
     def test_success(self, monkeypatch: pytest.MonkeyPatch):
@@ -109,6 +117,28 @@ class TestRun:
         assert result.exit_code == -1
         assert result.stdout == "partial"
         assert "timed out after 5s" in result.stderr
+
+    def test_timeout_removes_named_container(self, monkeypatch: pytest.MonkeyPatch):
+        calls: list[list[str]] = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if argv[1] == "run":
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"], output="partial")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("agentflow.lite.container.subprocess.run", fake_run)
+
+        result = _executor().run("sleep 999", timeout=5)
+
+        assert result.timed_out is True
+        run_argv = calls[0]
+        name = run_argv[run_argv.index("--name") + 1]
+        assert name.startswith("agentflow-lite-")
+        # The daemon-side container survives killing the CLI; it must be
+        # removed by name so timeouts do not leak containers.
+        assert calls[1] == ["docker", "rm", "-f", name]
+        assert "force-removed" in result.stderr
 
     def test_output_truncation(self, monkeypatch: pytest.MonkeyPatch):
         big = "x" * 60_000
