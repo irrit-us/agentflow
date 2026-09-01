@@ -1,0 +1,73 @@
+# Methods 11+12 as one shared DAG: constraint-consistency-driven and
+# call-chain-semantic-driven smart contract audit. A common static-structure
+# extraction feeds two discovery branches (constraint consistency / call-chain
+# semantics) whose candidates converge on a single confirmation closure.
+# Method source: user-provided audit methodology, methods 11 and 12.
+# Architecture components referenced from flow-notes: SmartAuditFlow
+# (plan-execute decomposition over a static structure pass), Finite Monkey
+# (business-flow-guided hypothesis generation), FORGE (structured evidence
+# chains reused by the validation stage), A1/SmartPoC (Foundry PoC loops).
+name: constraint-callchain-consistency
+nodes:
+  # ---- shared head ----
+  - id: static-structure-extraction
+    prompt: "Statically analyze the target contracts with Slither, extracting contract structure, function inventory, modifiers and state variables, call relationships, and initial alerts; organize the result as shared input for both discovery branches."
+    container:
+      image: trailofbits/eth-security-toolbox:latest
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: constraint-callchain-shared, target: /shared}
+  # ---- branch A: method 11, constraint consistency ----
+  - id: business-flow-reconstruction
+    prompt: "Reconstruct the system's end-to-end business processes. Partition each process into creation, validation, execution, settlement, and termination phases, and for every phase identify the roles, assets, objects, and states involved."
+    depends_on: [static-structure-extraction]
+  - id: function-business-abstraction
+    prompt: "Abstract every external or state-mutating function into a business card: business operation (what the function does in business terms); participants (who initiates, who authorizes, who benefits, who bears the loss); objects (which assets, accounts, orders, or states are operated on); preconditions (what must hold before execution); constraint checks (what the code actually checks); state changes (which values and objects are modified, including external calls); postconditions (what the system must satisfy afterwards)."
+    max_iterations: 10
+  - id: constraint-matrix
+    prompt: "Build the business-operation x constraint matrix from the function cards. Constraint dimensions cover quantity, identity, asset relationship, time, and uniqueness. Record for each operation which constraints are checked, at which phase, and against which state."
+  - id: cross-entry-comparison
+    prompt: "Compare constraint checks for the same business action across every dimension: different entries of the same action (identical authorization and quantity checks?); forward versus inverse operations (deposit/withdraw symmetry); creation versus consumption (can an object validated at creation be replaced before use?); quote versus execution (same price, units, and rounding rules?); single versus batch operations (does the batch path skip per-item checks?); normal versus exceptional paths (do failure, cancellation, and emergency exits preserve the same business constraints?); normal versus privileged versus emergency paths; creation-time versus use-time checks against the same state. Classify each finding as constraint omission, constraint conflict, wrong timing, or wrong object, and for each business effect identify the path with the weakest constraints."
+    max_iterations: 8
+  # ---- branch B: method 12, call-chain semantics ----
+  - id: call-graph-enumeration
+    prompt: "Enumerate external entry points, internal functions, and external call relations. Build the direct and indirect call graph and select the call chains that touch assets, permissions, and critical state."
+    depends_on: [static-structure-extraction]
+  - id: node-semantic-annotation
+    prompt: "Annotate every node on the selected call chains with its local business semantics: parameters, return values, and identity/authorization context passed in and out; asset, balance, pricing-unit, and beneficiary changes; state reads, state writes, and cache updates; error returns, exception capture, and partial-failure behavior; external calls, callbacks, and possible re-entry points. State explicitly what each function does NOT re-verify (for example, function B accepts function A's computed amount without re-checking identity)."
+    max_iterations: 10
+  - id: end-to-end-composition
+    prompt: "Compose the annotated local effects into end-to-end business semantics for each call chain. Compare the composed effect with the entry point's name and design goal. Check whether locally correct functions combine into a globally anomalous result; whether the same effect is executed twice or omitted; whether state changes between the check phase and the use phase; whether identity, object, or beneficiary is substituted mid-chain; whether an error is swallowed after earlier state has already committed."
+    max_iterations: 8
+  - id: anomalous-chain-discovery
+    prompt: "From the composition results, identify concrete anomalous chains: TOCTOU chains (check function -> state change -> use function); duplicate-effect chains (accounting -> external call -> callback re-enters accounting); state-split chains (main record updated, index update fails, error ignored upstream); stale-quote chains (quote computed from old state, intermediate call changes market state, execution reuses the stale result); double-counting chains (locally correct functions that together count the same asset twice, enabling repeated yield or settlement). For each chain, state the assumed attacker model."
+  # ---- shared tail: unified confirmation closure ----
+  - id: weak-path-exploit-construction
+    prompt: "For each candidate inconsistency and anomalous chain, construct the minimal reproduction: a concrete operation or call sequence that enters the strong business effect through the weakest-constraint path. Write and run a Foundry PoC against the target contracts; on execution failure or failure to trigger the effect, loop back within this node to fix the PoC, with the internal loop carried by LiteAgent max_iterations. Record the exact call sequence, inputs, required state, and ordering."
+    max_iterations: 10
+    depends_on: [cross-entry-comparison, anomalous-chain-discovery]
+    container:
+      image: ghcr.io/foundry-rs/foundry:latest
+      network: bridge
+      mounts:
+        - {type: volume, source: constraint-callchain-shared, target: /shared}
+  - id: confirmation-closure
+    prompt: "Close out every surviving candidate through the unified confirmation loop: confirm the attacker model; confirm the entry point and path are reachable; confirm which inputs, states, or orderings the attacker controls; name the violated security property, business constraint, or trust assumption; extract the concrete vulnerability primitives or gadgets (read, write, call, identity, state, or timing capabilities); discard candidates whose preconditions are only theoretically satisfiable; assemble the end-to-end attack chain; assess direct and second-order impact plus repeatability, amplification, cost, and scope. The final evidence for each finding must answer five questions: Reachability, Controllability, Violation, Primitive, Impact."
+    max_iterations: 6
+  - id: regression-test
+    prompt: "For each confirmed finding, write a Foundry regression test that fails on the vulnerable code and passes after the fix, and summarize the recommended constraint-alignment or call-chain fix."
+    max_iterations: 6
+    container:
+      image: ghcr.io/foundry-rs/foundry:latest
+      network: bridge
+      mounts:
+        - {type: volume, source: constraint-callchain-shared, target: /shared}
+edges:
+  - {from: business-flow-reconstruction, to: function-business-abstraction}
+  - {from: function-business-abstraction, to: constraint-matrix}
+  - {from: constraint-matrix, to: cross-entry-comparison}
+  - {from: call-graph-enumeration, to: node-semantic-annotation}
+  - {from: node-semantic-annotation, to: end-to-end-composition}
+  - {from: end-to-end-composition, to: anomalous-chain-discovery}
+  - {from: weak-path-exploit-construction, to: confirmation-closure}
+  - {from: confirmation-closure, to: regression-test}

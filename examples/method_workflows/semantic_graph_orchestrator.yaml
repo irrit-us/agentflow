@@ -1,0 +1,49 @@
+# Self-orchestrating audit over a function-level semantic effect graph.
+# Companion graph declaration for the Graph-of-Semantic project
+# (F:\AgtAdt\smart_contract4\Graph-of-Semantic): instead of a fixed
+# parse -> slice -> check pipeline, an orchestrator agent observes a shared
+# audit ledger and picks one graph-tool action per step; verification runs in
+# a separate container, independent from the reasoner.
+# Method source: Graph-of-Semantic README (this workspace). Mechanisms
+# referenced from the literature: Magentic-One dual ledgers (arXiv:2411.04468),
+# Reflexion episodic lessons (arXiv:2303.11366), GPTSwarm tools-instead-of-
+# topology (arXiv:2402.16823), DyLAN stall-driven adaptive effort
+# (arXiv:2310.02170). Practitioner constraints from flow-notes/98-practice:
+# thin scaffolding and tools-not-pipeline (BradMoon), small step budgets of
+# independent calls (error-accumulation law), slice context budgets (Heelan),
+# evidence-over-confidence findings (Devansh), verifier independence
+# (BradMoon Part II), coverage-ledger close-out (Finite Monkey).
+name: semantic-graph-orchestrator
+nodes:
+  - id: semantic-graph-construction
+    prompt: "Build the function-level semantic effect graph for the target source: each function becomes a function node; each branch becomes one child branch node carrying its condition (N branches produce N nodes, never 2^N paths); each loop is collapsed into a single loop node with an UNVERIFIED loop summary (invariant plus effect) and is never unrolled; annotate every node with syntactic reads/writes as a placeholder effect summary. Persist the graph as JSON on the shared volume."
+    container:
+      image: python:3.12-slim
+      mounts:
+        - {type: bind, source: ./targets, target: /targets, read_only: true}
+        - {type: volume, source: semantic-graph-shared, target: /shared}
+  - id: constraint-seeding
+    prompt: "Draft candidate business constraints over the graph's state variables, in five families: conservation (quantities preserved across operations), state machine (allowed transitions per state variable), authorization and separation of duty (role x resource x action matrix, mutually exclusive principals), temporal (check-before-use ordering, no re-entry between check and effect), idempotency (repeated execution equals single execution). Every constraint is a proposal: record its relevant variables for slicing and mark it pending confirmation; model confidence is not evidence."
+    depends_on: [semantic-graph-construction]
+  - id: ledger-driven-orchestration
+    prompt: "Run the self-orchestrating audit loop against the graph tools (build/validate/slice_by_constraint/get_node/propose_loop_summary/record_finding/mark_reviewed/add_lesson/update_plan). Maintain two ledgers: a task ledger (current plan, open hypotheses) and a progress ledger (candidate findings with mandatory concrete evidence, reviewed-node coverage, feedback events, textual lessons from refuted hypotheses). Each iteration: render the ledger, choose exactly ONE tool action, record the result as feedback. Refuse oversized slices by narrowing constraint variables or reviewing per function (context budget). When no new finding has appeared for 6 iterations, treat it as a stall signal: change strategy, narrow slices, or finish. Keep every step an independent tool call; never chain dependent reasoning across steps without writing state to the ledger."
+    max_iterations: 40
+    depends_on: [constraint-seeding]
+  - id: independent-verification
+    prompt: "Independently verify everything the orchestration loop produced, as a component separate from the reasoning agent: for each proposed loop summary, attempt induction or assertion-based fuzzing and flip its status to VERIFIED or FAILED; for each candidate finding, attempt concrete reproduction (SMT feasibility of the violating path, or a Foundry PoC against the target contracts) and mark it CONFIRMED or REJECTED. On PoC failure, loop back within this node to repair the PoC, with the inner loop carried by max_iterations. Discard candidates whose preconditions are only theoretically satisfiable. Execution can only prove something can happen; design-intent violations are escalated for human judgment, not auto-confirmed."
+    max_iterations: 10
+    depends_on: [ledger-driven-orchestration]
+    container:
+      image: ghcr.io/foundry-rs/foundry:latest
+      network: bridge
+      mounts:
+        - {type: volume, source: semantic-graph-shared, target: /shared}
+  - id: coverage-and-report
+    prompt: "Close out the coverage ledger: report reviewed versus total nodes per constraint slice, and any loop summaries still UNVERIFIED (deterministic claims must not rely on them). For each CONFIRMED finding, assemble final evidence answering five questions: Reachability, Controllability, Violation (which business constraint), Primitive, Impact. Append the lessons accumulated during orchestration as audit metadata for the next engagement."
+    max_iterations: 6
+    depends_on: [independent-verification]
+edges:
+  - {from: semantic-graph-construction, to: constraint-seeding}
+  - {from: constraint-seeding, to: ledger-driven-orchestration}
+  - {from: ledger-driven-orchestration, to: independent-verification}
+  - {from: independent-verification, to: coverage-and-report}

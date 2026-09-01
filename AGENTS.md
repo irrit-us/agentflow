@@ -12,6 +12,9 @@ Guidance for AI agents and contributors working in this repository.
   execution, YAML graph runner, and monitor HTTP server + web UI. See `docs/lite.md`.
 - **`examples/paper_architectures/`**: containerized graph declarations for 47 security-agent
   paper architectures. Build graphs, do not run them by default.
+- **`examples/method_workflows/`**: method-driven audit workflows (lite graph declarations,
+  no fidelity manifest). Build graphs with `examples/method_workflows/build_all.py`,
+  do not run them by default.
 
 ## Commands
 
