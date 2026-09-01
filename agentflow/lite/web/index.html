@@ -13,32 +13,78 @@
   * { box-sizing: border-box; }
   body { margin: 0; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--text); }
   header { display: flex; align-items: center; gap: 18px; padding: 10px 18px; background: var(--panel); border-bottom: 1px solid var(--border); }
-  header h1 { font-size: 16px; margin: 0; }
+  header h1 { font-size: 16px; margin: 0; white-space: nowrap; }
   #health { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
   .dot.ok { background: var(--green); } .dot.err { background: var(--red); } .dot.unknown { background: var(--gray); }
   #done-flag { font-size: 13px; color: var(--green); }
+  #toolbar { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+  #toolbar button {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 13px;
+  }
+  #toolbar button:hover { border-color: var(--blue); }
+  #zoom-label { font-size: 12px; color: var(--muted); min-width: 44px; text-align: center; }
+
   #main { display: flex; height: calc(100vh - 45px); }
-  #canvas-wrap { position: relative; flex: 1; overflow: auto; }
-  #edges { position: absolute; top: 0; left: 0; width: 3000px; height: 2000px; pointer-events: none; }
-  #edges line { stroke: var(--border); stroke-width: 2; }
-  #nodes { position: absolute; top: 0; left: 0; width: 3000px; height: 2000px; }
-  .node { position: absolute; width: 200px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; cursor: grab; user-select: none; }
+  #canvas-wrap { position: relative; flex: 1; overflow: hidden; cursor: grab; }
+  #canvas-wrap.panning { cursor: grabbing; }
+  #viewport { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+  #edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+  #nodes { position: absolute; top: 0; left: 0; }
+
+  .edge-path { fill: none; stroke-width: 2; }
+  .edge-path.pending { stroke: var(--border); }
+  .edge-path.done { stroke: var(--green); opacity: 0.75; }
+  .edge-path.active { stroke: var(--blue); stroke-dasharray: 7 5; animation: dashflow 0.9s linear infinite; }
+  /* Aggregate edge: fan-out source -> template node, shadows the per-item
+     edges; drawn dotted so it stays readable under them. */
+  .edge-path.aggregate { stroke-dasharray: 2 5; opacity: 0.55; }
+  .edge-hit { fill: none; stroke: transparent; stroke-width: 14; pointer-events: stroke; cursor: pointer; }
+  .edge-path.highlight { stroke: var(--orange) !important; stroke-width: 3; opacity: 1; animation: none; }
+  .edge-path.dim, .node.dim { opacity: 0.18; }
+  .node { transition: opacity 0.12s; }
+  .node.highlight { border-color: var(--orange); }
+  #edge-tip {
+    position: absolute; display: none; pointer-events: none; z-index: 6;
+    background: rgba(23, 30, 46, 0.95); border: 1px solid var(--orange);
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; color: var(--text);
+  }
+  @keyframes dashflow { to { stroke-dashoffset: -12; } }
+
+  .node { position: absolute; width: 220px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; cursor: grab; user-select: none; }
   .node:active { cursor: grabbing; }
-  .node .nid { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  .node.fanout-child { border-style: dashed; border-color: var(--purple); background: rgba(168, 85, 247, 0.07); }
+  .node .nid { font-weight: 600; font-size: 14px; margin-bottom: 6px; word-break: break-all; }
+  .node .nid .parent-ref { color: var(--purple); font-weight: 400; font-size: 12px; }
   .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 10px; color: #fff; }
   .badge.preparing { background: var(--gray); }
   .badge.processing { background: var(--blue); animation: pulse 1.2s ease-in-out infinite; }
   .badge.finished { background: var(--green); }
   .badge.errored { background: var(--red); }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
-  .node .tokens { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .badge.attempts { background: var(--orange); margin-left: 4px; }
+  .node .meta { font-size: 12px; color: var(--muted); margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .node .meta .elapsed.processing { color: var(--blue); }
   .node.err-border { border-color: var(--red); }
+
+  #legend {
+    position: absolute; left: 12px; bottom: 12px; background: rgba(23, 30, 46, 0.92);
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 12px; z-index: 5;
+  }
+  #legend summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  #legend .row { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: var(--muted); }
+  #legend .swatch { width: 22px; height: 0; border-top: 2px solid; }
+  #legend .swatch.pending { border-color: var(--border); }
+  #legend .swatch.done { border-color: var(--green); }
+  #legend .swatch.active { border-color: var(--blue); border-top-style: dashed; }
+
   aside { width: 240px; background: var(--panel); border-left: 1px solid var(--border); padding: 12px 14px; overflow-y: auto; }
   aside h3 { margin: 0 0 10px; font-size: 14px; }
   aside ul { margin: 0; padding: 0; list-style: none; font-size: 13px; }
   aside li { padding: 6px 0; border-bottom: 1px solid var(--border); }
   aside li .waiting { color: var(--muted); font-size: 12px; }
+
   #drawer { position: fixed; top: 0; right: -520px; width: 500px; height: 100vh; background: var(--panel); border-left: 1px solid var(--border); transition: right 0.2s; display: flex; flex-direction: column; z-index: 10; }
   #drawer.open { right: 0; }
   #drawer header { justify-content: space-between; }
@@ -62,11 +108,37 @@
   <h1 id="title">Lite Pipeline Monitor</h1>
   <span id="health"><span id="health-dot" class="dot unknown"></span><span id="health-text">Checking…</span></span>
   <span id="done-flag"></span>
+  <div id="toolbar">
+    <button id="zoom-out" title="Zoom out">−</button>
+    <span id="zoom-label">100%</span>
+    <button id="zoom-in" title="Zoom in">+</button>
+    <button id="zoom-fit" title="Fit graph to view">Fit</button>
+    <button id="layout-reset" title="Recompute automatic layout">Reset layout</button>
+  </div>
 </header>
 <div id="main">
   <div id="canvas-wrap">
-    <svg id="edges"></svg>
-    <div id="nodes"></div>
+    <div id="viewport">
+      <svg id="edges">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                  markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke"></path>
+          </marker>
+        </defs>
+      </svg>
+      <div id="nodes"></div>
+    </div>
+    <div id="edge-tip"></div>
+    <details id="legend" open>
+      <summary>Legend</summary>
+      <div class="row"><span class="swatch pending"></span> pending dependency</div>
+      <div class="row"><span class="swatch active"></span> flowing (target running)</div>
+      <div class="row"><span class="swatch done"></span> completed</div>
+      <div class="row"><span class="badge processing">processing</span><span class="badge finished">finished</span><span class="badge errored">errored</span><span class="badge preparing">preparing</span></div>
+      <div class="row">dashed purple border: fan-out item node · dotted: aggregate edge</div>
+      <div class="row">hover an edge or node to isolate its connections</div>
+    </details>
   </div>
   <aside>
     <h3>Blocked tasks</h3>
@@ -82,13 +154,18 @@
   <div id="drawer-footer"></div>
 </div>
 <script>
+"use strict";
 const STATUS_TEXT = { preparing: "preparing", processing: "processing", finished: "finished", errored: "errored" };
-const NODE_W = 200, NODE_H = 78;
+const NODE_W = 220, LAYER_GAP_X = 300, LAYER_GAP_Y = 130, ORIGIN_X = 60, ORIGIN_Y = 60;
+const ZOOM_MIN = 0.25, ZOOM_MAX = 2.5;
+
 let graphName = "pipeline";
 let positions = {};
 let nodesById = {};
 let edges = [];
 let layoutDone = false;
+// View transform: world -> screen is (x * zoom + tx, y * zoom + ty).
+let zoom = 1, tx = 0, ty = 0;
 
 function esc(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -96,6 +173,8 @@ function esc(s) {
 function storageKey() { return "lite-monitor-positions:" + graphName; }
 function loadPositions() { try { positions = JSON.parse(localStorage.getItem(storageKey())) || {}; } catch (e) { positions = {}; } }
 function savePositions() { localStorage.setItem(storageKey(), JSON.stringify(positions)); }
+
+// ---------------------------------------------------------------- layout
 
 function computeLayers(ids) {
   const indeg = {}, adj = {};
@@ -113,61 +192,308 @@ function computeLayers(ids) {
   return layers;
 }
 
-function ensureLayout(ids) {
-  if (layoutDone) return;
-  loadPositions();
-  computeLayers(ids).forEach((layer, li) => {
+// Order nodes inside each layer by the barycenter of their predecessors so
+// edges cross less. Fan-out children of the same parent are kept adjacent.
+function orderLayers(layers) {
+  const preds = {};
+  edges.forEach(([f, t]) => { (preds[t] = preds[t] || []).push(f); });
+  const rank = {};
+  layers.forEach((layer, li) => layer.forEach((id, i) => { rank[id] = li * 10000 + i; }));
+  for (let pass = 0; pass < 2; pass++) {
+    for (let li = 1; li < layers.length; li++) {
+      const key = id => {
+        const ps = (preds[id] || []).map(p => rank[p]);
+        const bary = ps.length ? ps.reduce((a, b) => a + b, 0) / ps.length : rank[id];
+        // Stable tie-break: fan-out children sort right after their parent.
+        return [bary, (nodesById[id] && nodesById[id].fanout_parent) || "", id];
+      };
+      layers[li].sort((a, b) => {
+        const ka = key(a), kb = key(b);
+        return ka[0] - kb[0] || (ka[1] < kb[1] ? -1 : ka[1] > kb[1] ? 1 : (ka[2] < kb[2] ? -1 : 1));
+      });
+      layers[li].forEach((id, i) => { rank[id] = li * 10000 + i; });
+    }
+  }
+  return layers;
+}
+
+function autoLayout(ids) {
+  orderLayers(computeLayers(ids)).forEach((layer, li) => {
     layer.forEach((id, idx) => {
-      if (!positions[id]) positions[id] = { x: 60 + li * 280, y: 60 + idx * 130 };
+      positions[id] = { x: ORIGIN_X + li * LAYER_GAP_X, y: ORIGIN_Y + idx * LAYER_GAP_Y };
     });
   });
+}
+
+function ensureLayout(ids) {
+  if (layoutDone) {
+    // Assign positions to late-appearing nodes (e.g. fan-out children).
+    const fresh = ids.filter(id => !positions[id]);
+    if (fresh.length) {
+      const parentOf = id => (nodesById[id] && nodesById[id].fanout_parent) || null;
+      fresh.forEach(id => {
+        const parent = parentOf(id);
+        if (parent && positions[parent]) {
+          // Stack fan-out children below their parent.
+          const siblings = ids.filter(s => parentOf(s) === parent);
+          const idx = siblings.indexOf(id);
+          positions[id] = { x: positions[parent].x + LAYER_GAP_X, y: positions[parent].y + idx * LAYER_GAP_Y };
+        } else {
+          positions[id] = { x: ORIGIN_X, y: ORIGIN_Y };
+        }
+      });
+    }
+    return;
+  }
+  loadPositions();
+  const known = ids.filter(id => positions[id]);
+  if (known.length !== ids.length) {
+    const saved = positions;
+    autoLayout(ids);
+    // Keep any saved coordinates the user arranged manually.
+    ids.forEach(id => { if (saved[id]) positions[id] = saved[id]; });
+  }
   layoutDone = true;
+}
+
+// ---------------------------------------------------------------- viewport
+
+function applyTransform() {
+  document.getElementById("viewport").style.transform =
+    "translate(" + tx + "px, " + ty + "px) scale(" + zoom + ")";
+  document.getElementById("zoom-label").textContent = Math.round(zoom * 100) + "%";
+}
+
+function zoomAt(cx, cy, factor) {
+  const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * factor));
+  if (next === zoom) return;
+  // Keep the world point under the cursor stationary.
+  tx = cx - (cx - tx) * (next / zoom);
+  ty = cy - (cy - ty) * (next / zoom);
+  zoom = next;
+  applyTransform();
+}
+
+function graphBounds() {
+  const ids = Object.keys(nodesById);
+  if (!ids.length) return null;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  ids.forEach(id => {
+    const p = positions[id] || { x: 0, y: 0 };
+    const el = document.querySelector('.node[data-node-id="' + CSS.escape(id) + '"]');
+    const h = el ? el.offsetHeight : 80;
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x + NODE_W); maxY = Math.max(maxY, p.y + h);
+  });
+  return { minX, minY, maxX, maxY };
+}
+
+function fitToView() {
+  const wrap = document.getElementById("canvas-wrap");
+  const b = graphBounds();
+  if (!b) return;
+  const pad = 40;
+  const w = b.maxX - b.minX + pad * 2, h = b.maxY - b.minY + pad * 2;
+  zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN,
+    Math.min(wrap.clientWidth / w, wrap.clientHeight / h)));
+  tx = (wrap.clientWidth - (b.maxX - b.minX) * zoom) / 2 - b.minX * zoom;
+  ty = (wrap.clientHeight - (b.maxY - b.minY) * zoom) / 2 - b.minY * zoom;
+  applyTransform();
+}
+
+(function wireViewport() {
+  const wrap = document.getElementById("canvas-wrap");
+  wrap.addEventListener("wheel", e => {
+    e.preventDefault();
+    const rect = wrap.getBoundingClientRect();
+    zoomAt(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+  }, { passive: false });
+
+  // Pan on background drag (node drags stop propagation).
+  let panStart = null;
+  wrap.addEventListener("mousedown", e => {
+    if (e.target.closest(".node")) return;
+    panStart = { x: e.clientX, y: e.clientY, tx, ty };
+    wrap.classList.add("panning");
+    e.preventDefault();
+  });
+  document.addEventListener("mousemove", e => {
+    if (!panStart) return;
+    tx = panStart.tx + (e.clientX - panStart.x);
+    ty = panStart.ty + (e.clientY - panStart.y);
+    applyTransform();
+  });
+  document.addEventListener("mouseup", () => {
+    panStart = null;
+    wrap.classList.remove("panning");
+  });
+
+  document.getElementById("zoom-in").addEventListener("click", () => {
+    const wrapRect = wrap.getBoundingClientRect();
+    zoomAt(wrapRect.width / 2, wrapRect.height / 2, 1.25);
+  });
+  document.getElementById("zoom-out").addEventListener("click", () => {
+    const wrapRect = wrap.getBoundingClientRect();
+    zoomAt(wrapRect.width / 2, wrapRect.height / 2, 1 / 1.25);
+  });
+  document.getElementById("zoom-fit").addEventListener("click", fitToView);
+  document.getElementById("layout-reset").addEventListener("click", () => {
+    positions = {};
+    autoLayout(Object.keys(nodesById));
+    savePositions();
+    renderNodes();
+    fitToView();
+  });
+})();
+
+// ---------------------------------------------------------------- rendering
+
+function formatDuration(n) {
+  const now = Date.now() / 1000;
+  if (n.started_at == null) return "";
+  const end = n.finished_at != null ? n.finished_at : now;
+  const secs = Math.max(0, end - n.started_at);
+  const text = secs < 60 ? secs.toFixed(1) + "s" : Math.floor(secs / 60) + "m" + Math.round(secs % 60) + "s";
+  return text;
+}
+
+function shortId(n) {
+  // Fan-out runtime nodes look like "audit--0001": show the item suffix and
+  // reference the parent instead of repeating the full template id.
+  if (n.fanout_parent && n.id.startsWith(n.fanout_parent + "--")) {
+    return '<span class="parent-ref">' + esc(n.fanout_parent) + " / </span>" +
+      esc(n.id.slice(n.fanout_parent.length + 2));
+  }
+  return esc(n.id);
 }
 
 function renderNodes() {
   const container = document.getElementById("nodes");
   container.innerHTML = "";
   Object.values(nodesById).forEach(n => {
-    const pos = positions[n.id] || { x: 60, y: 60 };
+    const pos = positions[n.id] || { x: ORIGIN_X, y: ORIGIN_Y };
     const div = document.createElement("div");
-    div.className = "node" + (n.status === "errored" ? " err-border" : "");
+    div.className = "node"
+      + (n.status === "errored" ? " err-border" : "")
+      + (n.fanout_parent ? " fanout-child" : "");
     div.style.left = pos.x + "px";
     div.style.top = pos.y + "px";
     div.dataset.nodeId = n.id;
-    const tokens = n.usage ? n.usage.total_tokens + " tokens" : "";
+    const tokens = n.usage ? n.usage.total_tokens + " tok" : "";
+    const elapsed = formatDuration(n);
+    const attempts = (n.attempts && n.attempts > 1)
+      ? '<span class="badge attempts" title="attempts">×' + n.attempts + "</span>" : "";
     div.innerHTML =
-      '<div class="nid">' + esc(n.id) + "</div>" +
-      '<span class="badge ' + n.status + '">' + (STATUS_TEXT[n.status] || n.status) + "</span>" +
-      '<div class="tokens">' + esc(tokens) + "</div>";
+      '<div class="nid">' + shortId(n) + "</div>" +
+      '<span class="badge ' + n.status + '">' + (STATUS_TEXT[n.status] || n.status) + "</span>" + attempts +
+      '<div class="meta">' +
+        (elapsed ? '<span class="elapsed ' + n.status + '" title="' +
+          (n.finished_at != null ? "duration" : "running for") + '">' + esc(elapsed) + "</span>" : "") +
+        (tokens ? "<span>" + esc(tokens) + "</span>" : "") +
+      "</div>";
     attachDrag(div, n.id);
-    div.addEventListener("click", () => openDrawer(n.id));
+    div.addEventListener("click", () => { if (!div.dataset.dragged) openDrawer(n.id); });
+    div.addEventListener("mouseenter", () => isolateConnections(null, n.id));
+    div.addEventListener("mouseleave", clearIsolation);
     container.appendChild(div);
   });
   drawEdges();
+  applyPinnedHighlight();
+}
+
+function edgeState(f, t) {
+  const a = nodesById[f], b = nodesById[t];
+  if (b && b.status === "processing") return "active";
+  if (a && a.status === "finished") return "done";
+  return "pending";
+}
+
+// An edge (f, t) is an aggregate edge when the fan-out source also feeds
+// per-item runtime nodes of t (f -> t--NNNN); it shadows those edges.
+function isAggregateEdge(f, t) {
+  return edges.some(([sf, st]) => sf === f && st.startsWith(t + "--"));
+}
+
+// Highlight one edge (or all edges incident on one node) and dim the rest.
+function isolateConnections(f, t) {
+  const match = ([ef, et]) => (f === null) ? (et === t || ef === t) : (ef === f && et === t);
+  document.querySelectorAll("path.edge-path").forEach(p => {
+    const on = match([p.dataset.from, p.dataset.to]);
+    p.classList.toggle("highlight", on);
+    p.classList.toggle("dim", !on);
+  });
+  document.querySelectorAll(".node").forEach(div => {
+    const incident = edges.some(([ef, et]) =>
+      match([ef, et]) && (ef === div.dataset.nodeId || et === div.dataset.nodeId));
+    div.classList.toggle("highlight", incident);
+    div.classList.toggle("dim", !incident);
+  });
+}
+
+function clearIsolation() {
+  document.querySelectorAll("path.edge-path").forEach(p => p.classList.remove("highlight", "dim"));
+  document.querySelectorAll(".node").forEach(div => div.classList.remove("highlight", "dim"));
+  const tip = document.getElementById("edge-tip");
+  tip.style.display = "none";
+}
+
+function showEdgeTip(f, t, evt) {
+  const tip = document.getElementById("edge-tip");
+  const wrap = document.getElementById("canvas-wrap").getBoundingClientRect();
+  const state = edgeState(f, t);
+  tip.textContent = f + " → " + t + " · " + state;
+  tip.style.display = "block";
+  tip.style.left = (evt.clientX - wrap.left + 12) + "px";
+  tip.style.top = (evt.clientY - wrap.top + 12) + "px";
 }
 
 function drawEdges() {
   const svg = document.getElementById("edges");
-  svg.innerHTML = "";
+  svg.querySelectorAll("path.edge-path, path.edge-hit").forEach(p => p.remove());
   edges.forEach(([f, t]) => {
     const a = positions[f], b = positions[t];
     if (!a || !b) return;
-    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    line.setAttribute("x1", a.x + NODE_W); line.setAttribute("y1", a.y + NODE_H / 2);
-    line.setAttribute("x2", b.x); line.setAttribute("y2", b.y + NODE_H / 2);
-    svg.appendChild(line);
+    const elA = document.querySelector('.node[data-node-id="' + CSS.escape(f) + '"]');
+    const elB = document.querySelector('.node[data-node-id="' + CSS.escape(t) + '"]');
+    const hA = elA ? elA.offsetHeight : 80, hB = elB ? elB.offsetHeight : 80;
+    const x1 = a.x + NODE_W, y1 = a.y + hA / 2;
+    const x2 = b.x, y2 = b.y + hB / 2;
+    // Horizontal gap drives the curvature; backward edges bow more.
+    const bend = Math.max(40, Math.abs(x2 - x1) * 0.5);
+    // Aggregate edges arc above the fan-out column instead of cutting
+    // straight through the stacked per-item nodes.
+    const lift = isAggregateEdge(f, t) ? 120 : 0;
+    const d = "M " + x1 + " " + y1 +
+      " C " + (x1 + bend) + " " + (y1 - lift) + ", " + (x2 - bend) + " " + (y2 - lift) +
+      ", " + x2 + " " + y2;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    path.setAttribute("class", "edge-path " + edgeState(f, t)
+      + (isAggregateEdge(f, t) ? " aggregate" : ""));
+    path.setAttribute("marker-end", "url(#arrow)");
+    path.dataset.from = f; path.dataset.to = t;
+    svg.appendChild(path);
+    // Wide invisible hit path: thin curves are hard to hover directly.
+    const hit = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    hit.setAttribute("d", d);
+    hit.setAttribute("class", "edge-hit");
+    hit.addEventListener("mouseenter", e => { isolateConnections(f, t); showEdgeTip(f, t, e); });
+    hit.addEventListener("mousemove", e => showEdgeTip(f, t, e));
+    hit.addEventListener("mouseleave", clearIsolation);
+    svg.appendChild(hit);
   });
 }
 
 function attachDrag(div, id) {
   let startX, startY, origX, origY, moved;
   div.addEventListener("mousedown", e => {
+    e.stopPropagation(); // do not start a canvas pan
     startX = e.clientX; startY = e.clientY;
     origX = positions[id].x; origY = positions[id].y;
     moved = false;
     function onMove(ev) {
-      const dx = ev.clientX - startX, dy = ev.clientY - startY;
-      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      const dx = (ev.clientX - startX) / zoom, dy = (ev.clientY - startY) / zoom;
+      if (Math.abs(dx) + Math.abs(dy) > 3) { moved = true; div.dataset.dragged = "1"; }
       positions[id] = { x: origX + dx, y: origY + dy };
       div.style.left = positions[id].x + "px";
       div.style.top = positions[id].y + "px";
@@ -177,6 +503,8 @@ function attachDrag(div, id) {
       document.removeEventListener("mousemove", onMove);
       document.removeEventListener("mouseup", onUp);
       if (moved) savePositions();
+      // Swallow the click that follows a drag.
+      setTimeout(() => { delete div.dataset.dragged; }, 0);
     }
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -184,11 +512,13 @@ function attachDrag(div, id) {
   });
 }
 
+// ---------------------------------------------------------------- polling
+
 async function pollState() {
   try {
     const res = await fetch("/api/state");
     const data = await res.json();
-    if (data.name !== graphName) { graphName = data.name; layoutDone = false; positions = {}; }
+    if (data.name !== graphName) { graphName = data.name; layoutDone = false; positions = {}; zoom = 1; tx = 0; ty = 0; applyTransform(); }
     nodesById = {};
     data.nodes.forEach(n => { nodesById[n.id] = n; });
     edges = data.edges;
@@ -242,6 +572,8 @@ async function pollBlocked() {
   } catch (e) { /* retry on the next tick */ }
 }
 
+// ---------------------------------------------------------------- drawer
+
 async function openDrawer(id) {
   const drawer = document.getElementById("drawer");
   const body = document.getElementById("drawer-body");
@@ -291,7 +623,23 @@ document.getElementById("drawer-close").addEventListener("click", () => {
   document.getElementById("drawer").classList.remove("open");
 });
 
-pollState(); pollHealth(); pollBlocked();
+// ?highlight=<from>,<to> pins an edge isolation (deep links, screenshots);
+// re-applied after every poll re-render so it survives refreshes.
+const pinnedHighlight = (() => {
+  const spec = new URLSearchParams(location.search).get("highlight");
+  if (!spec) return null;
+  const [f, t] = spec.split(",");
+  return { from: f || null, to: t || null };
+})();
+
+function applyPinnedHighlight() {
+  if (!pinnedHighlight) return;
+  if (pinnedHighlight.to) isolateConnections(pinnedHighlight.from, pinnedHighlight.to);
+  else isolateConnections(null, pinnedHighlight.from);
+}
+
+pollState().then(() => { fitToView(); applyPinnedHighlight(); });
+pollHealth(); pollBlocked();
 setInterval(pollState, 1000);
 setInterval(pollHealth, 3000);
 setInterval(pollBlocked, 2000);

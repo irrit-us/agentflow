@@ -345,11 +345,17 @@ uvicorn.run(app, host="127.0.0.1", port=8600)
 - `GET /api/blocked` — preparing nodes and the dependencies they wait on
 - `GET /api/nodes/{id}/inspect` — full message history, usage, and error of one node
 
-The UI polls these endpoints, draws the DAG with draggable nodes (layout
-persisted in localStorage), a blocked-task sidebar, and a per-node inspect
-drawer with the full conversation. The HTTP API is intentionally read-only
-(GET/HEAD only); it serves monitoring only, and every other method, including
-`OPTIONS`, is rejected with 405.
+The UI polls these endpoints and draws the DAG as an interactive canvas:
+draggable nodes (layout persisted in localStorage), wheel zoom and
+background panning with fit-to-view, directed curved edges colored by state
+(pending / flowing / completed, with fan-out aggregate edges drawn dotted and
+arced over the per-item nodes), hover isolation of an edge's or node's
+connections, and a `?highlight=<from>,<to>` deep link that pins a connection
+across refreshes. Fan-out item nodes are marked with dashed borders and show
+duration, token usage, and retry counts. A blocked-task sidebar and a
+per-node inspect drawer with the full conversation complete the view. The
+HTTP API is intentionally read-only (GET/HEAD only); it serves monitoring
+only, and every other method, including `OPTIONS`, is rejected with 405.
 
 ## Examples
 
