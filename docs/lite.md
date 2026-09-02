@@ -354,6 +354,8 @@ connections, and a `?highlight=<from>,<to>` deep link that pins a connection
 across refreshes. Fan-out item nodes are marked with dashed borders and show
 duration, token usage, and retry counts. A blocked-task sidebar and a
 per-node inspect drawer with the full conversation complete the view. The
+toolbar also toggles between dark and light themes (persisted in
+localStorage, defaulting to the saved choice or the OS preference). The
 HTTP API is intentionally read-only (GET/HEAD only); it serves monitoring
 only, and every other method, including `OPTIONS`, is rejected with 405.
 

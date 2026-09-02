@@ -114,6 +114,18 @@ def test_health_with_failing_probe_and_without_probe():
     assert client2.get("/api/health").json()["llm"] == {"status": "unknown"}
 
 
+def test_index_page_serves_theme_toggle():
+    client = TestClient(create_app(_finished_runner()))
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    html = response.text
+    assert 'id="theme-toggle"' in html
+    assert '[data-theme="light"]' in html
+    assert "lite-monitor-theme" in html
+
+
 def test_state_endpoint_structure():
     runner = _finished_runner()
     client = TestClient(create_app(runner))
