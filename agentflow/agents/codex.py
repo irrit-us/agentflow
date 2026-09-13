@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from agentflow.agents.base import AgentAdapter
+from agentflow.agents.secrets import wrap_secret_files
 from agentflow.env import merge_env_layers
 from agentflow.prepared import ExecutionPaths, PreparedExecution
 from agentflow.specs import NodeSpec, ProviderConfig, RepoInstructionsMode, ToolAccess
@@ -10,6 +12,9 @@ from agentflow.specs import NodeSpec, ProviderConfig, RepoInstructionsMode, Tool
 
 class CodexAdapter(AgentAdapter):
     _SUPPORTED_SANDBOX_MODES = {"read-only", "workspace-write", "danger-full-access"}
+
+    def _toml_key(self, value: str) -> str:
+        return value if re.fullmatch(r"[A-Za-z0-9_-]+", value) else self._format_toml_value(value)
 
     def _format_toml_value(self, value: object) -> str:
         import json
@@ -21,7 +26,7 @@ class CodexAdapter(AgentAdapter):
         if isinstance(value, list):
             return "[" + ", ".join(self._format_toml_value(item) for item in value) + "]"
         if isinstance(value, dict):
-            items = ", ".join(f"{key} = {self._format_toml_value(inner)}" for key, inner in value.items())
+            items = ", ".join(f"{self._format_toml_value(key)} = {self._format_toml_value(inner)}" for key, inner in value.items())
             return "{" + items + "}"
         return json.dumps(str(value), ensure_ascii=False)
 
@@ -31,9 +36,18 @@ class CodexAdapter(AgentAdapter):
             lines.append(f"model = {self._format_toml_value(node.model)}")
         lines.append(f"approval_policy = {self._format_toml_value('never')}")
         lines.append(f"sandbox_mode = {self._format_toml_value(sandbox_mode)}")
+        settings = node.model_settings
+        for key, value in {"model_context_window": settings.context_window,
+                           "model_max_output_tokens": settings.max_output_tokens,
+                           "model_reasoning_effort": settings.reasoning_effort,
+                           "web_search": settings.web_search}.items():
+            if value is not None:
+                lines.append(f"{key} = {self._format_toml_value(value)}")
+        if provider:
+            lines.append(f"model_provider = {self._format_toml_value(provider.name)}")
         if provider and (provider.base_url or provider.api_key_env or provider.wire_api):
             lines.append("")
-            lines.append(f"[model_providers.{provider.name}]")
+            lines.append(f"[model_providers.{self._toml_key(provider.name)}]")
             lines.append(f"name = {self._format_toml_value(provider.name)}")
             if provider.base_url:
                 lines.append(f"base_url = {self._format_toml_value(provider.base_url)}")
@@ -44,7 +58,11 @@ class CodexAdapter(AgentAdapter):
         if node.mcps:
             for mcp in node.mcps:
                 lines.append("")
-                lines.append(f"[mcp_servers.{mcp.name}]")
+                lines.append(f"[mcp_servers.{self._toml_key(mcp.name)}]")
+                for key in ("startup_timeout_sec", "tool_timeout_sec"):
+                    value = getattr(mcp, key)
+                    if value is not None:
+                        lines.append(f"{key} = {self._format_toml_value(value)}")
                 if mcp.transport == "stdio":
                     if mcp.command:
                         lines.append(f"command = {self._format_toml_value(mcp.command)}")
@@ -52,25 +70,17 @@ class CodexAdapter(AgentAdapter):
                         lines.append(f"args = {self._format_toml_value(mcp.args)}")
                     if mcp.env:
                         lines.append(f"env = {self._format_toml_value(mcp.env)}")
+                    if mcp.secret_env:
+                        lines.append(f"env_vars = {self._format_toml_value(list(mcp.secret_env))}")
                 else:
                     if mcp.url:
                         lines.append(f"url = {self._format_toml_value(mcp.url)}")
                     if mcp.headers:
                         lines.append(f"http_headers = {self._format_toml_value(mcp.headers)}")
-        return "\n".join(lines) + "\n"
-
-    def _render_profile_config(self, node: NodeSpec, provider: ProviderConfig | None) -> str:
-        """Render the ``agentflow`` profile into ``agentflow.config.toml``.
-
-        Modern codex loads ``<config-dir>/<profile>.config.toml`` when invoked
-        with ``--profile <profile>``; the legacy ``[profiles.<name>]`` table in
-        ``config.toml`` is rejected by recent builds.
-        """
-        lines: list[str] = []
-        if node.model:
-            lines.append(f"model = {self._format_toml_value(node.model)}")
-        if provider:
-            lines.append(f"model_provider = {self._format_toml_value(provider.name)}")
+                    if mcp.env_http_headers:
+                        lines.append(f"env_http_headers = {self._format_toml_value(mcp.env_http_headers)}")
+                    if mcp.bearer_token_env_var:
+                        lines.append(f"bearer_token_env_var = {self._format_toml_value(mcp.bearer_token_env_var)}")
         return "\n".join(lines) + "\n"
 
     def _resolve_sandbox_mode(self, node: NodeSpec, env: dict[str, str]) -> str:
@@ -120,6 +130,7 @@ class CodexAdapter(AgentAdapter):
         return wrapper_text + self._WRAPPER_SEPARATOR + prompt
 
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
+        self.validate_node_features(node)
         provider = self.provider_config(node.provider, node.agent)
         executable = node.executable or "codex"
         env = merge_env_layers(getattr(provider, "env", None), node.env)
@@ -154,9 +165,13 @@ class CodexAdapter(AgentAdapter):
         inherit_host_credentials = not is_docker_target or bool(
             getattr(node.target, "inherit_credentials", False)
         )
+        if getattr(node.target, "kind", None) == "docker" and inherit_host_credentials:
+            raise ValueError("Docker agent nodes must use explicit secret files, not host credentials")
         needs_scoped_home = bool(
             provider
             or node.mcps
+            or node.model_settings.model_dump(exclude_none=True)
+            or is_docker_target
             or repo_instructions_ignored
             or (is_docker_target and inherit_host_credentials)
         )
@@ -179,7 +194,7 @@ class CodexAdapter(AgentAdapter):
                 )
             if provider:
                 runtime_files[self.relative_runtime_file("codex_home", "agentflow.config.toml")] = (
-                    self._render_profile_config(node, provider)
+                    self._render_config(node, provider, sandbox)
                 )
             host_auth = Path.home() / ".codex" / "auth.json"
             if inherit_host_credentials and host_auth.is_file():
@@ -189,7 +204,7 @@ class CodexAdapter(AgentAdapter):
         cwd = paths.target_workdir
         if repo_instructions_ignored:
             cwd = self.target_path(paths)
-        return PreparedExecution(
+        prepared = PreparedExecution(
             command=command,
             env=env,
             cwd=cwd,
@@ -197,3 +212,4 @@ class CodexAdapter(AgentAdapter):
             runtime_files=runtime_files,
             runtime_symlinks=runtime_symlinks,
         )
+        return wrap_secret_files(node, prepared, paths)

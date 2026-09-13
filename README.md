@@ -10,6 +10,12 @@ This repository is derived from
 upstream README at commit
 [`c1ca005`](https://github.com/berabuddies/agentflow/commit/c1ca0057ef00975beb899aad19864e9ef83f5a83)
 is preserved in [`docs/readme.old.md`](docs/readme.old.md).
+Typed actor nodes, explicit agent profiles, credential-safe Docker preparation,
+and the Harbor Terminus 2 adapter are described in
+[Actors and profiles](docs/actors-and-profiles.md).
+
+![AgentFlow Graph](docs/graph.png)
+*94-node pipeline: plan → 64 workers → 8 batch merges → 16 reviews → 4 review merges → synthesis*
 
 ## Components
 

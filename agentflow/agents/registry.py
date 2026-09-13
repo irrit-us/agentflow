@@ -9,6 +9,7 @@ from agentflow.agents.kilo import KiloAdapter
 from agentflow.agents.kimi import KimiAdapter
 from agentflow.agents.opencode import OpenCodeAdapter
 from agentflow.agents.pi import PiAdapter
+from agentflow.agents.terminus import TerminusAdapter
 from agentflow.agents.util import PythonAdapter, ShellAdapter, SyncAdapter
 from agentflow.agents.zcode import ZCodeAdapter
 from agentflow.specs import AgentKind
@@ -26,16 +27,20 @@ class AdapterRegistry:
             AgentKind.OPENCODE: OpenCodeAdapter(),
             AgentKind.KILO: KiloAdapter(),
             AgentKind.GOOSE: GooseAdapter(),
+            AgentKind.TERMINUS: TerminusAdapter(),
             AgentKind.PYTHON: PythonAdapter(),
             AgentKind.SHELL: ShellAdapter(),
             AgentKind.SYNC: SyncAdapter(),
         }
 
-    def register(self, kind: AgentKind, adapter: AgentAdapter) -> None:
+    def register(self, kind: AgentKind | str, adapter: AgentAdapter) -> None:
         self._registry[kind] = adapter
 
-    def get(self, kind: AgentKind) -> AgentAdapter:
+    def get(self, kind: AgentKind | str) -> AgentAdapter:
         return self._registry[kind]
+
+    def contains(self, kind: AgentKind | str) -> bool:
+        return kind in self._registry
 
 
 default_adapter_registry = AdapterRegistry()

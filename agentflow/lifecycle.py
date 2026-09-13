@@ -104,3 +104,11 @@ def tree_digest(root: Path, files: list[Path]) -> str:
                 content.update(chunk)
         digest.update(f"{relative.as_posix()}\0{content.hexdigest()}\n".encode("utf-8"))
     return digest.hexdigest()
+
+
+def __getattr__(name: str):
+    # Preserve upstream's public import without coupling stdlib helpers to core.
+    if name in {"ResilientOrchestrator", "ORCHESTRATOR_EXCEPTION_EXIT_CODE"}:
+        from agentflow import resilient
+        return getattr(resilient, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
