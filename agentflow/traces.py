@@ -489,26 +489,21 @@ class GooseTraceParser(BaseTraceParser):
 
 @dataclass(slots=True)
 class DeepSeekTraceParser(BaseTraceParser):
-    """Parser for DeepSeek Harness's headless stream-JSON contract."""
+    """Parser for DeepSeek Harness's native ``--json`` headless event stream.
+
+    The official Harness project emits newline-delimited events
+    (``session``/``status``/``text``/``thinking``/``tool_call``/``tool_result``/
+    ``final``, plus ``error``) and closes a run with the terminal ``final``
+    event, whose lossless ``text`` is the authoritative answer. Exit status 1
+    with a non-completed ``turn_end`` reason marks a failure, so the parser
+    keeps the last committed ``text`` as a fallback when no ``final`` arrives.
+    """
 
     def supports_raw_stdout_fallback(self) -> bool:
         return False
 
-    def _message_text(self, message: Any) -> str:
-        if not isinstance(message, dict):
-            return ""
-        content = message.get("content")
-        if isinstance(content, str):
-            return content
-        if not isinstance(content, list):
-            return ""
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict) and item.get("type") == "text":
-                text = item.get("text")
-                if isinstance(text, str):
-                    parts.append(text)
-        return "".join(parts)
+    def _text(self, value: Any) -> str:
+        return value if isinstance(value, str) else ""
 
     def feed(self, line: str) -> list[NormalizedTraceEvent]:
         payload = _json(line)
@@ -517,40 +512,47 @@ class DeepSeekTraceParser(BaseTraceParser):
             return [self.emit("stdout", "stdout", text, line)] if text else []
 
         record_type = payload.get("type")
-        if record_type == "result":
-            output = payload.get("output")
-            text = output if isinstance(output, str) else ""
+
+        if record_type == "final":
+            text = self._text(payload.get("text"))
             self.final_chunks.clear()
             self.last_message = text
             if text:
                 self.final_chunks.append(text)
             return [self.emit("result", "Result", text, payload)]
 
-        if record_type != "session_event":
-            return [self.emit("event", str(record_type or "deepseek"), _stringify(payload), payload)]
+        if record_type == "error":
+            message = self._text(payload.get("message")) or _stringify(payload)
+            return [self.emit("error", "Error", message, payload)]
 
-        event = payload.get("event")
-        if not isinstance(event, dict):
-            return [self.emit("event", "Session event", "", payload)]
-        event_type = str(event.get("type") or "session_event")
-        data = event.get("data")
-        data = data if isinstance(data, dict) else {}
-
-        if event_type == "assistant/message":
-            text = self._message_text(data.get("message"))
+        if record_type == "text":
+            text = self._text(payload.get("text"))
             if text:
-                self.last_message = text
+                self.remember(text)
             return [self.emit("assistant_message", "Assistant message", text, payload)]
-        if event_type == "tool/call":
-            name = str(data.get("name") or "tool")
-            return [self.emit("tool_call", f"Tool call: {name}", _stringify(data.get("arguments")), payload)]
-        if event_type == "tool/result":
-            return [self.emit("tool_result", "Tool result", _stringify(data.get("message")), payload)]
-        if event_type == "turn/end":
-            reason = data.get("reason")
+
+        if record_type == "thinking":
+            return [self.emit("thinking", "Thinking", self._text(payload.get("text")), payload)]
+
+        if record_type == "tool_call":
+            name = str(payload.get("tool") or "tool")
+            return [self.emit("tool_call", f"Tool call: {name}", _stringify(payload.get("input")), payload)]
+
+        if record_type == "tool_result":
+            return [self.emit("tool_result", "Tool result", _stringify(payload.get("result")), payload)]
+
+        if record_type == "session":
+            return [self.emit("event", "Session", _stringify(payload.get("sessionId")), payload)]
+
+        if record_type == "status":
+            phase = str(payload.get("phase") or "status")
+            if phase != "turn_end":
+                return [self.emit("event", f"Status: {phase}", _stringify(payload), payload)]
+            reason = payload.get("reason")
             reason_kind = reason.get("kind") if isinstance(reason, dict) else reason
             return [self.emit("completed", "Turn ended", _stringify(reason_kind), payload)]
-        return [self.emit("event", event_type, _stringify(data), payload)]
+
+        return [self.emit("event", str(record_type or "deepseek"), _stringify(payload), payload)]
 
 
 @dataclass(slots=True)

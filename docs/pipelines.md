@@ -465,11 +465,12 @@ Per-node container fields include `image`, `engine` (default `docker`), `workdir
 ## Agent notes
 
 The adapters are pinned against real CLI binaries; command shapes below match
-these verified versions: Claude Code 2.1.226, Codex CLI 0.146.1, Kimi 0.34.0,
-pi 0.84.1, OpenCode 1.18.15 (with `OPENCODE_CONFIG`), Goose 1.45.0,
-ZCode CLI 0.16.3 from ZCode 3.7.7, Kilo Code 7.4.22 (with `KILO_CONFIG`), and
-the DeepSeek Harness headless profile on its primary branch. When a CLI bumps a
-flag, update the adapter and its shape tests together.
+these verified versions: Claude Code 2.1.273, Codex CLI 0.154.0, Kimi 1.50.0,
+pi 0.85.1, OpenCode 1.18.31 (with `OPENCODE_CONFIG`), Goose 1.50.1,
+ZCode CLI 0.16.5 from ZCode 3.12.2, Kilo Code 7.7.2 (with `KILO_CONFIG`), and
+DeepSeek Harness 0.1.6-alpha.1 from the official `deepseek-ai/deepseek-harness`
+repository. When a CLI bumps a flag, update the adapter and its shape tests
+together.
 
 ### Codex
 
@@ -487,16 +488,16 @@ flag, update the adapter and its shape tests together.
 ### Kimi
 
 - Uses `kimi --output-format stream-json -p` (0.34.0 dropped `--print`/`--yolo` and removed `--mcp-config-file`)
-- Maps `provider.api_key_env`/`base_url` to `KIMI_API_KEY`/`KIMI_BASE_URL`, and a node `model` to `KIMI_MODEL_NAME` plus `KIMI_MODEL_API_KEY`/`KIMI_MODEL_BASE_URL`
-- Writes MCP servers into `<KIMI_CODE_HOME>/mcp.json` and points `KIMI_CODE_HOME` at the node runtime dir, because kimi loads MCP servers from its user-global home
+- Maps `provider.api_key_env`/`base_url` to `KIMI_API_KEY`/`KIMI_BASE_URL`, and a node `model` to `KIMI_MODEL_NAME`
+- Writes MCP servers into `<KIMI_SHARE_DIR>/mcp.json` and points `KIMI_SHARE_DIR` at the node runtime dir, because kimi loads MCP servers from its user-global home. The older `KIMI_CODE_HOME` and `KIMI_MODEL_API_KEY`/`KIMI_MODEL_BASE_URL` environment taps no longer exist upstream, so the adapter does not set them
 
 ### DeepSeek Harness
 
-- Uses `dsh --profile headless --output-format stream-json` and consumes canonical Harness session events plus the terminal result record
+- Uses `dsh --profile headless --json` and consumes the native newline-delimited event stream (`session`/`status`/`text`/`thinking`/`tool_call`/`tool_result`/`final`, plus `error`) that the official Harness project ships; the terminal `final` event's lossless `text` is the authoritative answer, and exit status 1 with a non-completed `turn_end` reason marks a failure
 - Maps read-only and read-write tool modes to `DSH_PERMISSION_MODE=read-only` and `DSH_PERMISSION_MODE=workspace-write`; an explicit node environment value takes precedence
 - Leaves provider, model, MCP, and repository-instruction composition with the Harness profile, and rejects conflicting node-scoped settings instead of creating a parallel Harness configuration path
 - Resolves the executable from the node, `AGENTFLOW_DEEPSEEK_EXECUTABLE`, or `dsh`, in that order
-- Ships `dockers/deepseek.Dockerfile` on the shared `agentflow-base:bookworm-slim` image and pins the verified Harness commit; override `DSH_REPOSITORY` and `DSH_REF` together only for an intentional Harness upgrade
+- Ships `dockers/deepseek.Dockerfile` on the shared `agentflow-base:bookworm-slim` image and pins the official `deepseek-ai/deepseek-harness` release commit; override `DSH_REPOSITORY` and `DSH_REF` together only for an intentional Harness upgrade
 
 ### ZCode
 
@@ -504,7 +505,7 @@ flag, update the adapter and its shape tests together.
 - Maps read-only nodes to `plan` mode and read-write nodes to `yolo`; `AGENTFLOW_ZCODE_MODE` can explicitly select `build`, `edit`, `plan`, or `yolo`
 - Leaves authentication, provider/model selection, MCP services, and repository instructions with ZCode, and rejects conflicting node-scoped settings
 - Resolves the executable from the node, `AGENTFLOW_ZCODE_EXECUTABLE`, or `zcode`, in that order
-- Ships `dockers/zcode.Dockerfile` on the shared `agentflow-base:bookworm-slim` image and pins the official ZCode 3.7.7 Linux x64 package by SHA-256
+- Ships `dockers/zcode.Dockerfile` on the shared `agentflow-base:bookworm-slim` image and pins the official ZCode 3.12.2 Linux x64 package by SHA-256
 
 ### OpenCode
 
@@ -518,7 +519,7 @@ flag, update the adapter and its shape tests together.
 - Uses `kilo run --format json --auto` and consumes Kilo's raw JSON event stream
 - Materializes custom providers and MCP servers into a per-node `kilo.json`, selected with the trusted `KILO_CONFIG` override
 - Namespaces models on a custom provider as `<provider>/<model>` and otherwise leaves Kilo's ambient login and configuration available
-- Ships `dockers/kilo.Dockerfile` with `@kilocode/cli` 7.4.22; its compatible
+- Ships `dockers/kilo.Dockerfile` with `@kilocode/cli` 7.7.2; its compatible
   baseline binary is included in CLI verification
 
 ### Goose

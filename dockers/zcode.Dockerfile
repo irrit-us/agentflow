@@ -1,8 +1,8 @@
 # ZCode CLI image. Build on top of the AgentFlow base image.
 FROM agentflow-base:bookworm-slim
 
-ARG ZCODE_VERSION=3.7.7
-ARG ZCODE_DEB_SHA256=fe6f647d9b37f89bee12843cbbafd5a8fd0b33363941f32ee15e8e79f0856c63
+ARG ZCODE_VERSION=3.12.2
+ARG ZCODE_DEB_SHA256=2157cc6d36264d7dd024905019dee7a5179603281e542f4f47fcf4a59bedd592
 
 RUN apt-get update \
     && curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh \

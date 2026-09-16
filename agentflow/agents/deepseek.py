@@ -9,7 +9,12 @@ from agentflow.specs import NodeSpec, RepoInstructionsMode, ToolAccess
 
 
 class DeepSeekAdapter(AgentAdapter):
-    """Run a node through DeepSeek Harness's shipped headless profile."""
+    """Run a node through DeepSeek Harness's shipped headless profile.
+
+    The adapter consumes the native ``--json`` event stream the official
+    Harness project ships for ``--profile headless``; it does not rely on the
+    removed ``irrit-us`` fork's ``--output-format`` flag.
+    """
 
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         if node.provider is not None or node.model is not None:
@@ -33,8 +38,7 @@ class DeepSeekAdapter(AgentAdapter):
             executable,
             "--profile",
             "headless",
-            "--output-format",
-            "stream-json",
+            "--json",
         ]
         command.extend(node.extra_args)
         command.append(prompt)

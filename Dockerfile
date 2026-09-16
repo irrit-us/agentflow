@@ -7,11 +7,11 @@ FROM ${UV_IMAGE} AS uv
 
 FROM ${DOCKER_IMAGE}
 
-ARG CODEX_VERSION=0.148.0
-ARG CLAUDE_VERSION=2.1.236
-ARG KIMI_CLI_VERSION=1.49.0
-ARG KILO_VERSION=7.4.22
-ARG PI_VERSION=0.84.2
+ARG CODEX_VERSION=0.154.0
+ARG CLAUDE_VERSION=2.1.273
+ARG KIMI_CLI_VERSION=1.50.0
+ARG KILO_VERSION=7.7.2
+ARG PI_VERSION=0.85.1
 
 LABEL org.opencontainers.image.title="AgentFlow agent runtime" \
       org.opencontainers.image.description="AgentFlow with Codex, Claude Code, Kimi CLI, Kilo Code, Pi, and Docker-in-Docker"

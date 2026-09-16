@@ -32,15 +32,15 @@ the base image's Python 3.12 in an isolated venv.
 | Image | Agent | Contents |
 | --- | --- | --- |
 | `agentflow-base` | — | curl, git, wget, Python 3 (+ `python`), pip, venv |
-| `agentflow-codex` | codex | base + Node.js + `@openai/codex` |
-| `agentflow-claude` | claude | base + Node.js + `@anthropic-ai/claude-code` |
-| `agentflow-pi` | pi | base + Node.js + `@earendil-works/pi-coding-agent` |
-| `agentflow-kimi` | kimi | base + `kimi-cli` (uv tool install) |
-| `agentflow-opencode` | opencode | base + Node.js + `opencode-ai` |
-| `agentflow-kilo` | kilo | base + Node.js + `@kilocode/cli` 7.4.22 |
-| `agentflow-goose` | goose | base + `goose` v1.45.0 binary |
-| `agentflow-deepseek` | deepseek | base + Node.js + DeepSeek Harness + `ddgr` |
-| `agentflow-zcode` | zcode | base + Node.js + ZCode CLI |
+| `agentflow-codex` | codex | base + Node.js + `@openai/codex` 0.154.0 |
+| `agentflow-claude` | claude | base + Node.js + `@anthropic-ai/claude-code` 2.1.273 |
+| `agentflow-pi` | pi | base + Node.js + `@earendil-works/pi-coding-agent` 0.85.1 |
+| `agentflow-kimi` | kimi | base + `kimi-cli` 1.50.0 (uv tool install) |
+| `agentflow-opencode` | opencode | base + Node.js + `opencode-ai` 1.18.31 |
+| `agentflow-kilo` | kilo | base + Node.js + `@kilocode/cli` 7.7.2 |
+| `agentflow-goose` | goose | base + `goose` v1.50.1 binary |
+| `agentflow-deepseek` | deepseek | base + Node.js + DeepSeek Harness 0.1.6-alpha.1 |
+| `agentflow-zcode` | zcode | base + Node.js + ZCode 3.12.2 |
 | `agentflow-python` | python | base (thin) |
 | `agentflow-shell` | shell | base (thin) |
 | `agentflow-sync` | sync | base + openssh-client, rsync, tar |

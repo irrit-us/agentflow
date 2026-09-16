@@ -84,11 +84,11 @@ with Graph("deepseek-change", working_dir=".") as graph:
 print(graph.to_json())
 ```
 
-- Expect the adapter to launch `dsh --profile headless --output-format stream-json`. Override the executable with the node's `executable` field or `AGENTFLOW_DEEPSEEK_EXECUTABLE` only when needed.
+- Expect the adapter to launch `dsh --profile headless --json`, consuming the official Harness project's newline-delimited event stream and its terminal `final` answer. Override the executable with the node's `executable` field or `AGENTFLOW_DEEPSEEK_EXECUTABLE` only when needed.
 - Use `tools="read_only"` or `tools="read_write"`; AgentFlow maps them to `DSH_PERMISSION_MODE=read-only` or `workspace-write`. An explicit node environment value takes precedence.
-- Rely on the shipped headless profile for Bash, file read/write/edit, and `glob`/`grep` search through its packaged ripgrep. Its `web_search` uses DeepSeek's official search first and falls back to local `ddgr` only when the primary is unavailable or lacks credentials; `web_fetch` is disabled by default. Ensure `ddgr` is on `PATH` for local runs that need the fallback.
+- Rely on the shipped headless profile for Bash, file read/write/edit, and `glob`/`grep` search through its packaged ripgrep. Upstream owns its own `web_search`/`web_fetch` posture; AgentFlow's audit-safe container defaults (`network="none"`) are what keep a run offline.
 - Do not set node-scoped `provider`, `model`, `mcps`, or `repo_instructions_mode="ignore"`; the adapter rejects them. Compose Harness configuration with a patch such as `extra_args=["--patch", "team.yml"]`.
-- For container execution, build and use `agentflow-deepseek:bookworm-slim` from `dockers/deepseek.Dockerfile`. It shares the AgentFlow base image, pins the verified Harness revision, and includes `ddgr`.
+- For container execution, build and use `agentflow-deepseek:bookworm-slim` from `dockers/deepseek.Dockerfile`. It shares the AgentFlow base image and pins the official `deepseek-ai/deepseek-harness` release commit.
 
 ## Use ZCode nodes
 
@@ -108,7 +108,7 @@ print(graph.to_json())
 - Expect the adapter to launch `zcode --json --no-color --mode yolo --prompt ...` for read-write nodes and use `plan` mode for read-only nodes. Set `AGENTFLOW_ZCODE_MODE` to `build`, `edit`, `plan`, or `yolo` only when an explicit override is needed.
 - Do not set node-scoped `provider`, `model`, `mcps`, or `repo_instructions_mode="ignore"`; the adapter rejects them so ZCode remains the single configuration owner.
 - Override the executable with the node's `executable` field or `AGENTFLOW_ZCODE_EXECUTABLE` only when `zcode` is not on `PATH`.
-- For container execution, build and use `agentflow-zcode:bookworm-slim` from `dockers/zcode.Dockerfile`. It shares the AgentFlow base image and pins the official ZCode 3.7.7 Linux x64 package by SHA-256; provide user settings at runtime rather than baking credentials into the image.
+- For container execution, build and use `agentflow-zcode:bookworm-slim` from `dockers/zcode.Dockerfile`. It shares the AgentFlow base image and pins the official ZCode 3.12.2 Linux x64 package by SHA-256; provide user settings at runtime rather than baking credentials into the image.
 
 ## Choose the right graph primitive
 

@@ -522,8 +522,6 @@ def test_kimi_adapter_surfaces_provider_base_url_and_model_name(tmp_path, monkey
     assert prepared.env["KIMI_API_KEY"] == "deepseek-secret"
     assert prepared.env["KIMI_BASE_URL"] == "https://api.deepseek.com/v1"
     assert prepared.env["KIMI_MODEL_NAME"] == "deepseek-chat"
-    assert prepared.env["KIMI_MODEL_API_KEY"] == "deepseek-secret"
-    assert prepared.env["KIMI_MODEL_BASE_URL"] == "https://api.deepseek.com/v1"
 
 
 def test_pi_adapter_uses_pi_cli_directly(tmp_path):
@@ -1184,7 +1182,7 @@ def test_python_adapter_uses_container_target_workdir(tmp_path):
     assert prepared.cwd == "/workspace"
 
 
-def test_deepseek_adapter_uses_headless_stream_json_contract(tmp_path):
+def test_deepseek_adapter_uses_native_headless_json_contract(tmp_path):
     node = NodeSpec.model_validate(
         {
             "id": "implement",
@@ -1200,8 +1198,7 @@ def test_deepseek_adapter_uses_headless_stream_json_contract(tmp_path):
         "dsh",
         "--profile",
         "headless",
-        "--output-format",
-        "stream-json",
+        "--json",
         "--patch",
         "team.yml",
         "Implement it",

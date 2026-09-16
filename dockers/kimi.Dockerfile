@@ -4,7 +4,7 @@
 # Python 3.12 and keeps the CLI in an isolated venv.
 FROM agentflow-base:bookworm-slim
 
-RUN uv tool install --python 3.12 --no-cache kimi-cli==1.49.0
+RUN uv tool install --python 3.12 --no-cache kimi-cli==1.50.0
 
 WORKDIR /workspace
 CMD ["/bin/bash"]

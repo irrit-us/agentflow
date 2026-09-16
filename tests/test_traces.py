@@ -222,31 +222,21 @@ def test_goose_trace_parser_emits_error_event():
     assert events[0].content == "goose exploded"
 
 
-def test_deepseek_trace_parser_uses_terminal_result_as_authoritative_output():
+def test_deepseek_trace_parser_uses_terminal_final_as_authoritative_output():
     parser = create_trace_parser(AgentKind.DEEPSEEK, "implement")
-    assistant = parser.feed(
-        '{"type":"session_event","sessionId":"session-1","event":'
-        '{"type":"assistant/message","data":{"message":{"role":"assistant",'
-        '"content":[{"type":"text","text":"streamed answer"}]}}}}'
-    )
-    result = parser.feed(
-        '{"type":"result","sessionId":"session-1","output":"terminal answer"}'
-    )
+    assistant = parser.feed('{"type":"text","text":"streamed answer"}')
+    final = parser.feed('{"type":"final","text":"terminal answer"}')
 
     assert assistant[0].kind == "assistant_message"
     assert assistant[0].content == "streamed answer"
-    assert result[0].kind == "result"
+    assert final[0].kind == "result"
     assert parser.finalize() == "terminal answer"
     assert parser.supports_raw_stdout_fallback() is False
 
 
-def test_deepseek_trace_parser_falls_back_to_last_assistant_message_without_result():
+def test_deepseek_trace_parser_falls_back_to_last_committed_text_without_final():
     parser = create_trace_parser(AgentKind.DEEPSEEK, "implement")
-    parser.feed(
-        '{"type":"session_event","sessionId":"session-1","event":'
-        '{"type":"assistant/message","data":{"message":{"content":'
-        '[{"type":"text","text":"fallback"}]}}}}'
-    )
+    parser.feed('{"type":"text","text":"fallback"}')
 
     assert parser.finalize() == "fallback"
 
@@ -254,17 +244,14 @@ def test_deepseek_trace_parser_falls_back_to_last_assistant_message_without_resu
 def test_deepseek_trace_parser_normalizes_tools_and_turn_end():
     parser = create_trace_parser(AgentKind.DEEPSEEK, "implement")
     call = parser.feed(
-        '{"type":"session_event","event":{"type":"tool/call",'
-        '"data":{"name":"shell","arguments":"{\\"command\\":\\"pwd\\"}"}}}'
+        '{"type":"tool_call","callId":"call-1","tool":"shell",'
+        '"input":{"command":"pwd"}}'
     )
     result = parser.feed(
-        '{"type":"session_event","event":{"type":"tool/result",'
-        '"data":{"message":{"content":[{"type":"tool-result","content":'
-        '[{"type":"text","text":"ok"}]}]}}}}'
+        '{"type":"tool_result","callId":"call-1","status":"completed","result":"ok"}'
     )
     ended = parser.feed(
-        '{"type":"session_event","event":{"type":"turn/end",'
-        '"data":{"reason":{"kind":"completed"}}}}'
+        '{"type":"status","phase":"turn_end","turn":1,"reason":{"kind":"completed"}}'
     )
 
     assert call[0].kind == "tool_call"
@@ -273,6 +260,23 @@ def test_deepseek_trace_parser_normalizes_tools_and_turn_end():
     assert result[0].content == "ok"
     assert ended[0].kind == "completed"
     assert ended[0].content == "completed"
+
+
+def test_deepseek_trace_parser_surfaces_session_status_thinking_and_errors():
+    parser = create_trace_parser(AgentKind.DEEPSEEK, "implement")
+    session = parser.feed('{"type":"session","sessionId":"session-1","cwd":"/workspace"}')
+    status = parser.feed('{"type":"status","phase":"step_start","turn":1,"step":1}')
+    thinking = parser.feed('{"type":"thinking","text":"weighing options"}')
+    error = parser.feed('{"type":"error","message":"boom"}')
+
+    assert session[0].kind == "event"
+    assert session[0].content == "session-1"
+    assert status[0].kind == "event"
+    assert status[0].title == "Status: step_start"
+    assert thinking[0].kind == "thinking"
+    assert thinking[0].content == "weighing options"
+    assert error[0].kind == "error"
+    assert error[0].content == "boom"
 
 
 def test_zcode_trace_parser_extracts_headless_response():
