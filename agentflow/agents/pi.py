@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from agentflow.agents.base import AgentAdapter
@@ -11,6 +12,19 @@ from agentflow.specs import NodeSpec, ProviderConfig, RepoInstructionsMode, Tool
 
 _PI_READ_ONLY_TOOLS = "read,grep,find,ls"
 _PI_READ_WRITE_TOOLS = "read,bash,edit,write,grep,find,ls"
+
+# Session-resumption flags Pi accepts. When the caller pins one of these, the
+# adapter must NOT pass ``--no-session``: Pi would then skip persistence and a
+# later rerun of the node could not continue the interrupted session (the
+# long-running authoring roles rely on this after a watchdog rerun).
+_PI_SESSION_FLAGS = {
+    "--session-id",
+    "--session",
+    "--resume",
+    "-r",
+    "--continue",
+    "-c",
+}
 
 
 class PiAdapter(AgentAdapter):
@@ -26,15 +40,40 @@ class PiAdapter(AgentAdapter):
         env = merge_env_layers(getattr(provider, "env", None), node.env)
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
 
+        # Keep the session on disk when the node pins a session (id/resume) or
+        # when the operator explicitly opts in, so an interrupted role can be
+        # resumed with its own context instead of restarting from scratch.
+        pinned_session = bool(
+            os.getenv("AGENTFLOW_PI_KEEP_SESSION") == "1"
+            or any(
+                arg in _PI_SESSION_FLAGS
+                or arg.startswith("--session-id=")
+                or arg.startswith("--session=")
+                for arg in node.extra_args
+            )
+        )
+
         command: list[str] = [
             executable,
             "--print",
             "--mode",
             "json",
-            "--no-session",
         ]
+        if not pinned_session:
+            command.append("--no-session")
 
         tools = _PI_READ_ONLY_TOOLS if node.tools == ToolAccess.READ_ONLY else _PI_READ_WRITE_TOOLS
+        # `--tools` is an allowlist that also filters extension tools, so a node
+        # that loads an extension must name its tools explicitly. The authoring
+        # workflow's agent-management extension does this through
+        # AGENTFLOW_PI_EXTRA_TOOLS.
+        extra_tools = [
+            name.strip()
+            for name in os.getenv("AGENTFLOW_PI_EXTRA_TOOLS", "").split(",")
+            if name.strip()
+        ]
+        if extra_tools:
+            tools = f"{tools},{','.join(extra_tools)}"
         command.extend(["--tools", tools])
 
         runtime_files: dict[str, str] = {}
@@ -52,8 +91,6 @@ class PiAdapter(AgentAdapter):
 
         if provider and provider.api_key_env and provider.api_key_env not in env:
             # Surface the key into the subprocess env so Pi can read it by name.
-            import os
-
             resolved = os.getenv(provider.api_key_env)
             if resolved is not None:
                 env.setdefault(provider.api_key_env, resolved)
