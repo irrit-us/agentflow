@@ -5,7 +5,6 @@ const state = {
   nodes: {},
   events: [],
   selectedNodeId: null,
-  selectedArtifact: "output.txt",
   artifactCache: new Map(),
   eventSource: null,
   validationPipeline: null,
@@ -46,11 +45,11 @@ function escapeHtml(text) {
     .replaceAll(">", "&gt;");
 }
 
-function renderEmptyState(message) {
+function renderEmptyState(message, title = "Nothing to show yet") {
   return `
     <div class="empty-state">
       <span class="empty-state-icon" aria-hidden="true"></span>
-      <span class="empty-state-text">${escapeHtml(message)}</span>
+      <strong>${escapeHtml(title)}</strong><span class="empty-state-text">${escapeHtml(message)}</span>
     </div>
   `;
 }
@@ -626,19 +625,15 @@ function renderRuns() {
     document.head.appendChild(style);
   }
   if (!runs.length) {
-    container.innerHTML = '<div class="small">No runs yet.</div>';
+    container.innerHTML = renderEmptyState(state.runs.length ? "Try a different name, status, or run ID." : "Start a pipeline to see its progress here.", state.runs.length ? "No matching runs" : "No executions yet");
     return;
   }
-  const inactiveNodeStatuses = new Set(["pending", "queued", "ready"]);
+  const finishedNodeStatuses = new Set(["completed", "failed", "cancelled", "skipped"]);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
   const groups = { Today: [], Yesterday: [], Older: [] };
   const escapeAttr = (text) => escapeHtml(text).replaceAll('"', "&quot;");
-  const truncateRunName = (value) => {
-    const text = String(value || "Untitled pipeline");
-    return text.length > 20 ? `${text.slice(0, 17)}...` : text;
-  };
   const formatRelativeTime = (value) => {
     if (!value) return "-";
     const timestamp = new Date(value).getTime();
@@ -691,12 +686,12 @@ function renderRuns() {
 
     const progressedNodes = nodeIds.filter((nodeId) => {
       const status = String(run.nodes?.[nodeId]?.status || "pending").toLowerCase();
-      return !inactiveNodeStatuses.has(status);
+      return finishedNodeStatuses.has(status);
     }).length;
     const progressPercent = Math.max(0, Math.min(100, (progressedNodes / totalNodes) * 100));
 
     return `
-      <div class="runs-progress" aria-label="Run progress ${progressedNodes} of ${totalNodes} nodes">
+      <div class="runs-progress" aria-label="Run progress ${progressedNodes} of ${totalNodes} nodes finished">
         <div class="runs-progress-track" aria-hidden="true">
           <div class="runs-progress-fill" style="width:${progressPercent}%"></div>
         </div>
@@ -731,9 +726,11 @@ function renderRuns() {
                 style="width:8px;height:8px"
                 aria-hidden="true"
               ></span>
-              <strong class="runs-pipeline">${escapeHtml(truncateRunName(run.pipeline?.name))}</strong>
+              <strong class="runs-pipeline">${escapeHtml(run.pipeline?.name || "Untitled pipeline")}</strong>
             </div>
+            <div class="runs-state-row"><span class="run-state ${statusClass(run.status)}">${escapeHtml(run.status || "pending")}</span><span class="run-id mono">${escapeHtml(run.id.slice(0, 8))}</span></div>
             <div class="runs-subline">${escapeHtml(formatRelativeTime(run.started_at || run.created_at))} · ${escapeHtml(formatRunDuration(run))} · ${escapeHtml(`${getRunNodeIds(run).length} ${getRunNodeIds(run).length === 1 ? "node" : "nodes"}`)}</div>
+            ${renderProgress(run)}
           </button>
         `).join("")}
       </section>
@@ -772,7 +769,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   if (requestedNodeList !== pipelineNodeList) requestedNodeList.forEach(appendNode);
   const nodeMap = nodeStatusMap || state.nodes;
   if (!nodes.length) {
-    container.innerHTML = '<p class="small" style="padding:1rem">Validate or run a pipeline to render the DAG.</p>';
+    container.innerHTML = renderEmptyState("Choose an execution from run history to explore its dependencies and progress.", "Your workflow, at a glance");
     return;
   }
   const graphTooltip = ensureGraphNodeTooltip();
@@ -1105,13 +1102,13 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   function applySelectionOpacity(selectedNodeId = null) {
     const hasSelection = typeof selectedNodeId === "string" && Boolean(nodeRefs[selectedNodeId]);
     Object.entries(nodeRefs).forEach(([nodeId, group]) => {
-      group.style.opacity = !hasSelection || nodeId === selectedNodeId ? "1.0" : "0.3";
+      group.style.opacity = "1";
       const selection = group.querySelector('rect[filter="url(#graph-selected-shadow)"]');
       if (selection) selection.style.opacity = nodeId === selectedNodeId ? "1.0" : "0";
     });
     edgeRefs.forEach((edge) => {
       const isDirectDependencyEdge = edge.kind === "dependency" && edge.toId === selectedNodeId;
-      const opacity = !hasSelection || isDirectDependencyEdge ? "1.0" : "0.3";
+      const opacity = !hasSelection || isDirectDependencyEdge ? "1.0" : "0.55";
       edge.path.style.opacity = opacity;
       if (edge.label) edge.label.style.opacity = opacity;
     });
@@ -1353,7 +1350,6 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     const nodeId = nodeGroup.dataset.nodeId;
     if (!graphViewState.positions[nodeId]) return;
     const point = scenePoint(event);
-    nodesLayer.appendChild(nodeGroup);
     dragState = {
       nodeId,
       startX: point.x,
@@ -1372,7 +1368,9 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     const point = scenePoint(event);
     const dx = point.x - dragState.startX;
     const dy = point.y - dragState.startY;
-    dragState.moved ||= Math.abs(dx) > 2 || Math.abs(dy) > 2;
+    const moved = Math.abs(dx) > 2 || Math.abs(dy) > 2;
+    if (moved && !dragState.moved) nodesLayer.appendChild(nodeRefs[dragState.nodeId]);
+    dragState.moved ||= moved;
     graphViewState.positions[dragState.nodeId] = {
       x: Math.max(24, Math.min(layout.sceneWidth - layout.nodeWidth - 24, dragState.originX + dx)),
       y: Math.max(24, Math.min(layout.sceneHeight - layout.nodeHeight - 24, dragState.originY + dy)),
@@ -1416,12 +1414,29 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
 
 function renderRunMeta() {
   const run = currentRun();
-  document.getElementById("run-status").textContent = run?.status || "idle";
-  document.getElementById("run-meta").textContent = run
-    ? `${run.pipeline.name} · created ${formatDate(run.created_at)} · duration ${formatDuration(run)}`
-    : state.validationPipeline
-      ? `Validated DAG: ${state.validationPipeline.name}`
-      : "No run selected";
+  const status = run?.status || "idle";
+  const pill = document.getElementById("run-status");
+  pill.textContent = status;
+  pill.dataset.status = status;
+  document.getElementById("run-meta").textContent = run?.pipeline.name
+    || state.validationPipeline?.name || "Select an execution";
+  document.getElementById("run-context").textContent = run
+    ? `${formatDate(run.created_at)} · ${formatDuration(run)} · ${run.id.slice(0, 8)}`
+    : "Inspect progress, dependencies, and node activity.";
+  document.getElementById("cancel-run").disabled = !run || !["queued", "running", "cancelling"].includes(status);
+  document.getElementById("rerun-run").disabled = !run;
+  const nodes = Object.values(state.nodes);
+  const counts = [
+    ["Completed", "completed", nodes.filter(node => node.status === "completed").length],
+    ["Active", "running", nodes.filter(node => ["running", "retrying"].includes(node.status)).length],
+    ["Failed", "failed", nodes.filter(node => node.status === "failed").length],
+    ["Waiting", "pending", nodes.filter(node => ["pending", "ready", "queued"].includes(node.status)).length],
+    ["Other", "pending", nodes.filter(node => ["cancelled", "skipped"].includes(node.status)).length],
+  ];
+  document.getElementById("node-summary").innerHTML = nodes.length
+    ? `<span class="node-total">${nodes.length} nodes</span>` + counts.filter(([, , count]) => count)
+      .map(([label, kind, count]) => `<span class="node-count ${kind}"><i aria-hidden="true"></i>${count} ${label}</span>`).join("")
+    : '<span class="small">Execution overview</span>';
 }
 
 function upsertAttempt(nodeState, attemptNumber, patch) {
@@ -1624,7 +1639,7 @@ function ensureDetailEnhancements() {
         text-align: center;
       }
 
-      .detail-panel {
+      .detail-view {
         margin: 0 0 1rem;
         padding: 0;
         border: 0;
@@ -2110,13 +2125,13 @@ async function renderDetail() {
   }
 
   if (!selected || !selectedNodeId) {
-    detail.innerHTML = '<p class="small">Select a node to inspect its output, attempts, artifacts, and parsed timeline.</p>';
+    detail.innerHTML = renderEmptyState("Select a node in the graph to explore its output, attempts, and activity.", "A closer look");
     return;
   }
 
   const normalizedStatus = String(selected.status || "").toLowerCase();
   const defaultDetailTab = ["running", "retrying"].includes(normalizedStatus) ? "trace" : "output";
-  if (nodeChanged || !["output", "trace", "stdout", "stderr"].includes(state.detailTab)) {
+  if (nodeChanged || !["output", "trace", "stdout", "stderr", "launch"].includes(state.detailTab)) {
     state.detailTab = defaultDetailTab;
   }
 
@@ -2311,7 +2326,7 @@ async function renderDetail() {
       borderColor: "rgba(15, 23, 42, 0.14)",
     });
   } else {
-    const artifactName = activeTab === "stdout" ? "stdout.log" : "stderr.log";
+    const artifactName = activeTab === "launch" ? "launch.json" : activeTab === "stdout" ? "stdout.log" : "stderr.log";
     let artifactText = "";
     let artifactError = "";
     if (["running", "retrying"].includes(normalizedStatus) && state.runId) {
@@ -2336,6 +2351,7 @@ async function renderDetail() {
     { id: "trace", label: "Trace" },
     { id: "stdout", label: "Stdout" },
     { id: "stderr", label: "Stderr" },
+    { id: "launch", label: "Launch" },
   ];
   const successChecks = Array.isArray(selected.success_details) ? selected.success_details : [];
   const successChecksText = successChecks.length
@@ -2344,7 +2360,7 @@ async function renderDetail() {
 
   detail.innerHTML = `
     ${detailSummary}
-    <div class="detail-panel">
+    <div class="detail-view">
       <div class="detail-tablist" role="tablist" aria-label="Node detail views">
         ${detailTabs.map((tab) => {
           const isActive = tab.id === activeTab;
@@ -2355,11 +2371,13 @@ async function renderDetail() {
               role="tab"
               data-detail-tab="${tab.id}"
               aria-selected="${isActive ? "true" : "false"}"
+              tabindex="${isActive ? "0" : "-1"}"
+              id="detail-tab-${tab.id}" aria-controls="node-detail-panel"
             >${tab.label}</button>
           `;
         }).join("")}
       </div>
-      <div role="tabpanel" aria-label="${escapeHtml(detailTabs.find((tab) => tab.id === activeTab)?.label || "Detail")} panel">
+      <div id="node-detail-panel" role="tabpanel" tabindex="0" aria-labelledby="detail-tab-${activeTab}" aria-label="${escapeHtml(detailTabs.find((tab) => tab.id === activeTab)?.label || "Detail")} panel">
         ${tabPanelContent}
       </div>
     </div>
@@ -2389,6 +2407,7 @@ async function renderDetail() {
       if (!nextTab || nextTab === state.detailTab) return;
       state.detailTab = nextTab;
       await renderDetail();
+      detail.querySelector(`[data-detail-tab="${nextTab}"]`)?.focus({ preventScroll: true });
     };
   });
 
@@ -2499,7 +2518,8 @@ async function openRun(runId) {
   state.runId = run.id;
   state.pipeline = run.pipeline;
   state.nodes = run.nodes;
-  state.selectedNodeId = state.selectedNodeId || state.pipeline.nodes?.[0]?.id || null;
+  state.selectedNodeId = state.pipeline.nodes?.some(node => node.id === state.selectedNodeId)
+    ? state.selectedNodeId : state.pipeline.nodes?.[0]?.id || null;
   state.events = await api(`/api/runs/${runId}/events`);
   state.artifactCache.clear();
   renderRunMeta();
@@ -2741,13 +2761,6 @@ function showSkeleton(elementId) {
 
 ensureTransientUiStyles();
 
-for (const button of document.querySelectorAll(".artifact-button")) {
-  button.onclick = async () => {
-    state.selectedArtifact = button.dataset.artifact;
-    await renderDetail();
-  };
-}
-
 document.getElementById("load-example").onclick = async () => {
   const data = await api("/api/examples/default");
   document.getElementById("pipeline-input").value = data.example;
@@ -2780,13 +2793,13 @@ function runListItems() {
 
 function runIdForItem(item) {
   if (!(item instanceof Element)) return null;
-  return item.querySelector("button[data-open-run]")?.dataset.openRun || null;
+  return item.dataset.openRun || item.querySelector("button[data-open-run]")?.dataset.openRun || null;
 }
 
 function decorateRunListForKeyboard() {
   runListItems().forEach((item) => {
     if (!item.hasAttribute("tabindex")) item.tabIndex = 0;
-    const button = item.querySelector("button[data-open-run]");
+    const button = item.matches("button[data-open-run]") ? item : item.querySelector("button[data-open-run]");
     if (button) item.dataset.runId = button.dataset.openRun || "";
   });
 }
@@ -2863,7 +2876,7 @@ document.addEventListener("keydown", (e) => {
     const activeItem = activeRunListItem();
     if (!activeItem) return;
     if (e.target instanceof Element && e.target.closest("button[data-open-run]")) return;
-    const openButton = activeItem.querySelector("button[data-open-run]");
+    const openButton = activeItem.matches("button[data-open-run]") ? activeItem : activeItem.querySelector("button[data-open-run]");
     if (!openButton) return;
     openButton.click();
     focusRunListItem(activeItem);
@@ -2886,4 +2899,23 @@ document.addEventListener("keydown", (e) => {
     focusRunListItem(items[nextIndex]);
     e.preventDefault();
   }
+});
+
+renderRunMeta();
+
+renderGraph();
+renderDetail();
+
+document.getElementById("detail").addEventListener("keydown", async (event) => {
+  const tab = event.target.closest("[data-detail-tab]");
+  if (!tab || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const tabs = Array.from(document.querySelectorAll("[data-detail-tab]"));
+  const index = tabs.indexOf(tab);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+    : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  state.detailTab = tabs[next].dataset.detailTab;
+  await renderDetail();
+  document.querySelector(`[data-detail-tab="${state.detailTab}"]`)?.focus();
 });
