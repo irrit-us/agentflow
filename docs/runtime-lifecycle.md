@@ -10,7 +10,10 @@ requested cancellation, and cancellation of the executor coroutine send TERM
 to that group, allow the termination grace period, then send KILL to remaining
 members even if the leader has exited. Stream tasks are cancelled when the
 executor coroutine is cancelled. Prompt stdin draining is covered by the node
-timeout and cancellation cleanup.
+timeout and cancellation cleanup. All I/O is supervised concurrently, including
+cooperative cancellation while stdin is blocked. Callback failures propagate after
+cleanup; broken stdin preserves the actual child exit status. Cleanup runs in a
+shielded finally path so repeated coroutine cancellation cannot skip escalation.
 
 This covers descendants that remain in the group. A process that deliberately
 starts another session, a nested AgentFlow execution (which owns another group),
@@ -56,3 +59,6 @@ actual pipeline and freeze integration.
 Next increments are native child-run ownership, typed termination reasons,
 durable control-command receipts, version-bound artifact gates, and work-pool
 commit/drain semantics. These are not provided by the primitives above.
+
+See [the comparative evaluation](lifecycle-evaluation.md) for measured advantages,
+unfavorable cases, remaining gaps and the next acceptance gates.

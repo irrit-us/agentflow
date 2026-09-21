@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "python": "3.12.3",
+  "platform": "Linux-6.8.0-124-generic-x86_64-with-glibc2.39",
+  "task_files": 100,
+  "runtime_files": 0,
+  "repeats": 7,
+  "legacy_rglob": {
+    "files": 100,
+    "digest": "b98e8c8bb1b845acd80a0f29c8c809ee4786254f013c57f98e569c45a71e3945",
+    "median_ms": 10.149,
+    "samples_ms": [
+      10.272,
+      10.149,
+      10.153,
+      10.094,
+      10.07,
+      10.204,
+      10.036
+    ],
+    "directory_scans": 4,
+    "excluded_directory_scans": 0
+  },
+  "pruned_walk": {
+    "files": 100,
+    "digest": "b98e8c8bb1b845acd80a0f29c8c809ee4786254f013c57f98e569c45a71e3945",
+    "median_ms": 15.915,
+    "samples_ms": [
+      16.088,
+      15.839,
+      15.974,
+      16.133,
+      15.915,
+      15.833,
+      15.913
+    ],
+    "directory_scans": 2,
+    "excluded_directory_scans": 0
+  },
+  "scope": "Synthetic filesystem microbenchmark, warm cache, alternating order; not an end-to-end or framework benchmark."
+}

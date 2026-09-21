@@ -92,11 +92,12 @@ def tree_digest(root: Path, files: list[Path]) -> str:
     """
     root = Path(root)
     digest = hashlib.sha256()
+    resolved_root = root.resolve()
     for path in sorted(files, key=lambda item: item.relative_to(root).as_posix()):
         relative = path.relative_to(root)
         if ".." in relative.parts or path.is_symlink():
             raise ValueError(f"Invalid artifact path: {relative}")
-        path.resolve().relative_to(root.resolve())
+        path.resolve().relative_to(resolved_root)
         content = hashlib.sha256()
         with path.open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):

@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-21",
+  "baseline_commit": "4f234ee4e1e6ad970598b667678bc36b86c67728",
+  "method": "Same mocked subprocess fault-injection cases before and after the runner correction.",
+  "baseline_failed": 7,
+  "baseline_passed": 0,
+  "baseline_duration_seconds": 2.87,
+  "corrected_passed": 7,
+  "corrected_failed": 0,
+  "tests": [
+    "tests/test_local_supervision.py::test_cooperative_cancel_during_blocked_stdin",
+    "tests/test_local_supervision.py::test_eof_does_not_override_node_deadline",
+    "tests/test_local_supervision.py::test_callback_error_propagates_after_cleanup",
+    "tests/test_local_supervision.py::test_repeated_cancel_cannot_interrupt_cleanup",
+    "tests/test_local_supervision.py::test_cancel_during_final_stream_drain_cleans_group",
+    "tests/test_local_supervision.py::test_broken_stdin_preserves_real_exit_code",
+    "tests/test_local_supervision.py::test_external_completion_setup_error_cleans_child"
+  ],
+  "limitations": [
+    "Mocked processes/signals; not a kernel process-containment benchmark.",
+    "No Temporal, LangGraph or systemd performance experiment was run.",
+    "No production reliability or end-to-end cost comparison was run."
+  ]
+}

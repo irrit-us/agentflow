@@ -14,3 +14,5 @@ Detailed documentation for AgentFlow lives here.
 - [Archived upstream README](readme.old.md) - verbatim snapshot from upstream commit `c1ca005`
 
 - [Runtime lifecycle primitives](runtime-lifecycle.md): process ownership, work-item sessions, and content identity.
+
+- [Lifecycle evaluation](lifecycle-evaluation.md): alternatives, fault injection, benchmark evidence, and follow-up acceptance gates.

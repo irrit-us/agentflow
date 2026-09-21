@@ -328,31 +328,60 @@ class LocalRunner(Runner):
         stdout_task = asyncio.create_task(self._consume_stream(node, process.stdout, "stdout", stdout_lines, on_output))
         stderr_task = asyncio.create_task(self._consume_stream(node, process.stderr, "stderr", stderr_lines, on_output))
         wait_task = asyncio.create_task(process.wait())
-        external_completion = self._external_completion(node, prepared, paths)
-        external_task = (
-            asyncio.ensure_future(external_completion)
-            if external_completion is not None
-            else None
-        )
+        owned_tasks = [stdout_task, stderr_task, wait_task]
+        external_task = None
         external_exit_code: int | None = None
         timed_out = False
         cancelled = False
-
+        needs_termination = True
         timeout = node.timeout_seconds if node.timeout_seconds and node.timeout_seconds > 0 else None
         deadline = asyncio.get_running_loop().time() + timeout if timeout else None
 
-        # Monitor process exit, streams, timeout, and cancellation concurrently.
-        # Key insight: claude spawns child processes (MCP servers, plugins) that
-        # inherit stdout/stderr pipes. When claude exits, those children keep the
-        # pipes open — so we CANNOT rely on stream EOF to detect completion.
-        # Instead, we treat process exit (wait_task) as the primary signal.
+        async def feed_stdin() -> None:
+            if process.stdin is None:
+                return
+            try:
+                if prepared.stdin is not None:
+                    process.stdin.write(prepared.stdin.encode("utf-8"))
+                    await process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                # Like Process.communicate(), preserve the child's real status
+                # when it exits before consuming the complete prompt.
+                pass
+            finally:
+                process.stdin.close()
+
+        async def drain_streams() -> None:
+            # A descendant may hold pipes after the leader exits. Bound the
+            # drain, but do not discard callback/reader failures as timeouts.
+            done, _ = await asyncio.wait({stdout_task, stderr_task}, timeout=3)
+            for task in done:
+                task.result()
+
+        async def cleanup() -> None:
+            try:
+                if needs_termination:
+                    await self._terminate_with_fallback(process, wait_task)
+            finally:
+                for task in owned_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*owned_tasks, return_exceptions=True)
+                transport = getattr(process, "_transport", None)
+                if transport is not None:
+                    # Termination already closes the transport; normal exits
+                    # also need closure when descendants retain a pipe.
+                    if not needs_termination:
+                        transport.close()
+
         try:
-            if prepared.stdin is not None and process.stdin is not None:
-                process.stdin.write(prepared.stdin.encode("utf-8"))
-                await asyncio.wait_for(process.stdin.drain(), timeout=timeout)
-                process.stdin.close()
-            elif process.stdin is not None:
-                process.stdin.close()
+            stdin_task = asyncio.create_task(feed_stdin())
+            owned_tasks.append(stdin_task)
+            external_completion = self._external_completion(node, prepared, paths)
+            if external_completion is not None:
+                external_task = asyncio.ensure_future(external_completion)
+                owned_tasks.append(external_task)
+            io_tasks = {stdout_task, stderr_task, stdin_task}
             while True:
                 remaining = deadline - asyncio.get_running_loop().time() if deadline else None
                 if remaining is not None and remaining <= 0:
@@ -361,101 +390,61 @@ class LocalRunner(Runner):
                 if should_cancel():
                     cancelled = True
                     break
-                # Poll cancellation and timeout at 0.1s granularity while still
-                # waking immediately when the process exits or a stream EOFs.
-                check_timeout = min(remaining or 0.1, 0.1)
-                monitored_tasks = {stdout_task, stderr_task, wait_task}
-                if external_task is not None:
-                    monitored_tasks.add(external_task)
-                done, _ = await asyncio.wait(
-                    monitored_tasks,
-                    timeout=check_timeout,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if wait_task in done:
-                    # Process exited — this is our primary completion signal.
-                    # Don't wait for streams; child processes may hold pipes open.
+                for task in list(io_tasks):
+                    if task.done():
+                        task.result()
+                        io_tasks.remove(task)
+                if wait_task.done():
+                    wait_task.result()
                     break
-                if external_task is not None and external_task in done:
+                # asyncio Process.wait() can still be waiting for inherited
+                # pipes after the child watcher has recorded the exit status.
+                if isinstance(process.returncode, int):
+                    break
+                if external_task is not None and external_task.done():
                     external_exit_code = external_task.result()
                     break
-                if stdout_task in done and stderr_task in done:
-                    # Both streams EOF'd — process should follow shortly
-                    if not wait_task.done():
-                        completion_tasks = {wait_task}
-                        if external_task is not None:
-                            completion_tasks.add(external_task)
-                        completed, _ = await asyncio.wait(
-                            completion_tasks,
-                            timeout=5,
-                            return_when=asyncio.FIRST_COMPLETED,
-                        )
-                        if external_task is not None and external_task in completed:
-                            external_exit_code = external_task.result()
-                        elif wait_task not in completed:
-                            timed_out = True
-                    break
-        except asyncio.CancelledError:
-            await self._terminate_with_fallback(process, wait_task)
-            tasks = [stdout_task, stderr_task]
-            if external_task is not None:
-                tasks.append(external_task)
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
-        except Exception:
-            timed_out = True
-
-        # Drain streams with a hard 3s timeout — child processes may hold pipes
-        async def _drain_streams():
-            try:
-                await asyncio.wait_for(
-                    asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
-                    timeout=3,
+                monitored = {wait_task, *io_tasks}
+                if external_task is not None:
+                    monitored.add(external_task)
+                await asyncio.wait(
+                    monitored,
+                    timeout=min(remaining, 0.1) if remaining is not None else 0.1,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-            except asyncio.TimeoutError:
-                # Cancel stuck stream tasks
-                for task in (stdout_task, stderr_task):
-                    if not task.done():
-                        task.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await task
 
-        if timed_out:
-            await self._terminate_with_fallback(process, wait_task)
-            await _drain_streams()
-            stderr_lines.append(f"Timed out after {node.timeout_seconds}s")
-            await on_output("stderr", stderr_lines[-1])
-        elif cancelled:
-            await self._terminate_with_fallback(process, wait_task)
-            await _drain_streams()
-            stderr_lines.append("Cancelled by user")
-            await on_output("stderr", stderr_lines[-1])
-        elif external_exit_code is not None:
-            if not await self._wait_for_exit(
-                wait_task, self._EXTERNAL_COMPLETION_GRACE_SECONDS
-            ):
-                await self._terminate_with_fallback(process, wait_task)
-            await _drain_streams()
-        else:
-            await _drain_streams()
-            if not wait_task.done():
-                await wait_task
-
-        if external_task is not None:
-            if not external_task.done():
-                external_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await external_task
-            elif external_exit_code is None:
-                with suppress(asyncio.CancelledError, Exception):
-                    external_task.result()
+            if not timed_out and not cancelled:
+                client_exited = external_exit_code is None or await self._wait_for_exit(
+                    wait_task, self._EXTERNAL_COMPLETION_GRACE_SECONDS
+                )
+                if client_exited:
+                    await drain_streams()
+                    needs_termination = False
+                # Otherwise cleanup terminates the foreground client without
+                # replacing the external runtime's authoritative exit code.
+        finally:
+            # Every exit path owns cleanup, including errors during monitor
+            # setup, stdin, callbacks, or final draining. Repeated Task.cancel()
+            # requests must not interrupt TERM -> grace -> KILL escalation.
+            cleanup_task = asyncio.create_task(cleanup())
+            interrupted = False
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    interrupted = True
+            cleanup_task.result()
+            if interrupted:
+                raise asyncio.CancelledError
 
         if timed_out:
             exit_code = 124
+            stderr_lines.append(f"Timed out after {node.timeout_seconds}s")
+            await on_output("stderr", stderr_lines[-1])
         elif cancelled:
             exit_code = 130
+            stderr_lines.append("Cancelled by user")
+            await on_output("stderr", stderr_lines[-1])
         elif external_exit_code is not None:
             exit_code = external_exit_code
         else:
