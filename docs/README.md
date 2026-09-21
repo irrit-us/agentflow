@@ -12,3 +12,5 @@ Detailed documentation for AgentFlow lives here.
 - [Testing and maintainer workflows](testing.md)
 - [Background and sources](background.md)
 - [Archived upstream README](readme.old.md) - verbatim snapshot from upstream commit `c1ca005`
+
+- [Runtime lifecycle primitives](runtime-lifecycle.md): process ownership, work-item sessions, and content identity.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shlex
+import signal
 from collections.abc import Awaitable
 from contextlib import suppress
 from pathlib import Path
@@ -242,20 +243,32 @@ class LocalRunner(Runner):
         return True
 
     async def _terminate_with_fallback(self, process, wait_task: asyncio.Task[int]) -> None:
+        # Each POSIX launch owns a session/process group. Signal the group even
+        # if its leader already exited: grandchildren can still hold pipes or
+        # continue expensive work. Never discover targets by process name.
+        group_id = getattr(process, "pid", None) if os.name == "posix" else None
+        if group_id is not None:
+            with suppress(ProcessLookupError):
+                os.killpg(group_id, signal.SIGTERM)
+            await asyncio.sleep(self._TERMINATE_GRACE_SECONDS)
+            with suppress(ProcessLookupError):
+                os.killpg(group_id, signal.SIGKILL)
+            await self._wait_for_exit(wait_task, self._TERMINATE_GRACE_SECONDS)
+        else:
+            await self._terminate_process(process, wait_task)
+
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            transport.close()
+            await asyncio.sleep(0)
+
+    async def _terminate_process(self, process, wait_task: asyncio.Task[int]) -> None:
         with suppress(ProcessLookupError):
             process.terminate()
         if not await self._wait_for_exit(wait_task, self._TERMINATE_GRACE_SECONDS):
             with suppress(ProcessLookupError):
                 process.kill()
             await self._wait_for_exit(wait_task, self._TERMINATE_GRACE_SECONDS)
-
-        # asyncio exposes no public Process.close(). If descendants inherited a
-        # pipe, the transport otherwise survives after the direct child exits,
-        # delaying stream drain and warning when the event loop is later closed.
-        transport = getattr(process, "_transport", None)
-        if transport is not None:
-            transport.close()
-            await asyncio.sleep(0)
 
     async def _consume_stream(self, node: NodeSpec, stream, stream_name: str, buffer: list[str], on_output: StreamCallback) -> None:
         while True:
@@ -307,13 +320,8 @@ class LocalRunner(Runner):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.PIPE if prepared.stdin is not None else asyncio.subprocess.DEVNULL,
+            **({"start_new_session": True} if os.name == "posix" else {}),
         )
-        if prepared.stdin is not None and process.stdin is not None:
-            process.stdin.write(prepared.stdin.encode("utf-8"))
-            await process.stdin.drain()
-            process.stdin.close()
-        elif process.stdin is not None:
-            process.stdin.close()
 
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
@@ -339,6 +347,12 @@ class LocalRunner(Runner):
         # pipes open — so we CANNOT rely on stream EOF to detect completion.
         # Instead, we treat process exit (wait_task) as the primary signal.
         try:
+            if prepared.stdin is not None and process.stdin is not None:
+                process.stdin.write(prepared.stdin.encode("utf-8"))
+                await asyncio.wait_for(process.stdin.drain(), timeout=timeout)
+                process.stdin.close()
+            elif process.stdin is not None:
+                process.stdin.close()
             while True:
                 remaining = deadline - asyncio.get_running_loop().time() if deadline else None
                 if remaining is not None and remaining <= 0:
@@ -381,6 +395,15 @@ class LocalRunner(Runner):
                         elif wait_task not in completed:
                             timed_out = True
                     break
+        except asyncio.CancelledError:
+            await self._terminate_with_fallback(process, wait_task)
+            tasks = [stdout_task, stderr_task]
+            if external_task is not None:
+                tasks.append(external_task)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
         except Exception:
             timed_out = True
 
