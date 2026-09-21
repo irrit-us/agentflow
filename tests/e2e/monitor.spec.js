@@ -88,19 +88,20 @@ test('empty history and API failure remain understandable', async ({ page }) => 
   await expect(page.locator('#banner')).toContainText('Monitor unavailable');
 });
 
-test('theme follows the system and remembers an explicit choice', async ({ page }) => {
-  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+test('Catppuccin is fixed and only the main graph has rounded surfaces', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
+  await page.addInitScript(() => localStorage.setItem('agentflow-theme', 'light'));
   await mock(page);
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.locator('#refresh-runs')).toHaveCSS('background-color', 'rgb(24, 34, 49)');
-  await expect(page.getByRole('tabpanel').locator('pre')).toHaveCSS('background-color', 'rgb(16, 25, 37)');
-  await page.selectOption('#theme-select', 'light');
+  await expect(page.locator('#theme-select')).toHaveCount(0);
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(24, 24, 37)');
+  await expect(page.locator('#refresh-runs')).toHaveCSS('background-color', 'rgb(49, 50, 68)');
+  for (const selector of ['.history-panel', '.detail-panel', '.topbar', '.run-item', '#refresh-runs', '#detail pre', '.brand-symbol']) {
+    await expect(page.locator(selector).first()).toHaveCSS('border-radius', '0px');
+  }
+  await expect(page.locator('.graph-stage')).toHaveCSS('border-radius', '10px');
+  await page.emulateMedia({ colorScheme: 'dark' });
   await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await page.selectOption('#theme-select', 'system');
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await page.emulateMedia({ colorScheme: 'light' });
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.locator('body')).toHaveCSS('background-color', 'rgb(24, 24, 37)');
 });
 
 test('dragging reverses arrow ports, pans the canvas and survives refresh', async ({ page }) => {

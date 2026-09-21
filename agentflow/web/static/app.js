@@ -113,9 +113,9 @@ const GRAPH_NODE_STATUS_STYLES = {
   skipped: { fill: "#f6f8fa", stroke: "#d0d7de" },
   running: { fill: "#fff8c5", stroke: "#9a6700" },
   retrying: { fill: "#fff8c5", stroke: "#9a6700" },
-  completed: { fill: "#dafbe1", stroke: "#1a7f37" },
-  failed: { fill: "#ffebe9", stroke: "#cf222e" },
-  cancelled: { fill: "#ffebe9", stroke: "#cf222e" },
+  completed: { fill: "#dafbe1", stroke: "var(--success)" },
+  failed: { fill: "#ffebe9", stroke: "var(--danger)" },
+  cancelled: { fill: "#ffebe9", stroke: "var(--danger)" },
 };
 
 function graphLayoutSignature(nodes) {
@@ -590,15 +590,15 @@ function renderRuns() {
       }
 
       #runs .runs-status-dot.completed {
-        background: #1a7f37;
+        background: var(--success);
       }
 
       #runs .runs-status-dot.failed {
-        background: #cf222e;
+        background: var(--danger);
       }
 
       #runs .runs-status-dot.running {
-        background: #bf8700;
+        background: var(--warning);
         animation: runs-status-pulse 1.4s ease-in-out infinite;
       }
 
@@ -616,7 +616,7 @@ function renderRuns() {
       #runs .runs-progress-fill {
         height: 100%;
         border-radius: 999px;
-        background: #1a7f37;
+        background: var(--success);
       }
     `;
     document.head.appendChild(style);
@@ -1679,7 +1679,7 @@ function ensureDetailEnhancements() {
         border: 0;
         border-radius: 0;
         background: transparent;
-        color: #656d76;
+        color: var(--muted);
         font-size: 0.84rem;
         font-weight: 400;
         line-height: 1.4;
@@ -1693,7 +1693,7 @@ function ensureDetailEnhancements() {
       }
 
       .detail-tab[aria-selected="false"] {
-        color: #656d76;
+        color: var(--muted);
         font-weight: 400;
         border-bottom: none;
       }
@@ -2292,7 +2292,7 @@ async function renderDetail() {
         return `
           <div style="padding:8px 0;" data-trace-key="${escapeHtml(traceKey)}">
             <pre style="margin:0;padding:8px 12px;background:#f6f8fa;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;overflow-x:auto;"><span style="color:var(--muted);">$ </span>${renderHighlightedCommand(command, filename)}</pre>
-            ${exitCode !== null && exitCode !== undefined ? `<span style="font-size:11px;color:${Number(exitCode) === 0 ? '#1a7f37' : '#cf222e'};">exit ${exitCode}</span>` : ""}
+            ${exitCode !== null && exitCode !== undefined ? `<span style="font-size:11px;color:${Number(exitCode) === 0 ? 'var(--success)' : 'var(--danger)'};">exit ${exitCode}</span>` : ""}
             ${output ? `<details><summary style="font-size:11px;color:var(--muted);cursor:pointer;">output</summary><pre style="margin:4px 0 0;padding:8px 12px;background:#f6f8fa;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:200px;overflow-y:auto;">${escapeHtml(String(output))}</pre></details>` : ""}
           </div>
         `;
@@ -2312,7 +2312,7 @@ async function renderDetail() {
 
       return `
         <details style="padding:4px 0;" data-trace-key="${escapeHtml(traceKey)}"${isError || openTraceKeys.has(traceKey) ? " open" : ""}>
-          <summary style="cursor:pointer;font-size:12px;color:${isError ? '#cf222e' : '#656d76'};">
+          <summary style="cursor:pointer;font-size:12px;color:${isError ? 'var(--danger)' : 'var(--muted)'};">
               ${escapeHtml(title)}
           </summary>
           <div class="trace-card-body">
@@ -2934,19 +2934,3 @@ document.getElementById("detail").addEventListener("keydown", async (event) => {
   await renderDetail();
   document.querySelector(`[data-detail-tab="${state.detailTab}"]`)?.focus();
 });
-
-
-const themeSelect = document.getElementById("theme-select");
-const systemTheme = matchMedia("(prefers-color-scheme: dark)");
-try { themeSelect.value = localStorage.getItem("agentflow-theme") || "system"; } catch (_) {}
-if (!themeSelect.value) themeSelect.value = "system";
-function applyTheme() {
-  document.documentElement.dataset.theme = themeSelect.value === "system"
-    ? (systemTheme.matches ? "dark" : "light") : themeSelect.value;
-}
-themeSelect.addEventListener("change", () => {
-  try { localStorage.setItem("agentflow-theme", themeSelect.value); } catch (_) {}
-  applyTheme();
-});
-systemTheme.addEventListener("change", applyTheme);
-applyTheme();

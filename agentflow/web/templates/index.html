@@ -4,14 +4,6 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AgentFlow · Run monitor</title>
-    <script>
-      (() => {
-        let theme = 'system';
-        try { theme = localStorage.getItem('agentflow-theme') || theme; } catch (_) {}
-        document.documentElement.dataset.theme = theme === 'system'
-          ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme;
-      })();
-    </script>
     <link rel="stylesheet" href="/static/monitor.css">
   </head>
   <body>
@@ -23,7 +15,6 @@
           <span class="workspace-label">Run monitor</span>
         </div>
         <div class="topbar-tools">
-        <label class="theme-picker">Theme <select id="theme-select" aria-label="Color theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
         <div class="status-strip" aria-label="Run metrics">
           <div class="metric" aria-label="Total runs metric"><span>Total Runs</span><strong id="metric-total" aria-label="Total runs" aria-live="polite" aria-atomic="true">0</strong></div>
           <div class="metric" aria-label="Queued runs metric"><span>Queued</span><strong id="metric-queued" aria-label="Queued runs" aria-live="polite" aria-atomic="true">0</strong></div>
