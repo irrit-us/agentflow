@@ -407,7 +407,9 @@ function graphLayout(nodes) {
   Object.entries(fanouts).forEach(([groupId, memberIds]) => {
     if (!Array.isArray(memberIds)) return;
     memberIds.forEach((memberId) => {
-      if (nodeIds.has(memberId)) fanoutGroupByNodeId[memberId] = groupId;
+      if (nodeIds.has(memberId) && !normalizedNodes.find(node => node.id === memberId)?.previewMembers) {
+        fanoutGroupByNodeId[memberId] = groupId;
+      }
     });
   });
 
@@ -712,7 +714,6 @@ function renderRuns() {
     container.innerHTML = renderEmptyState(state.runs.length ? "Try a different name, status, or run ID." : "Start a pipeline to see its progress here.", state.runs.length ? "No matching runs" : "No executions yet");
     return;
   }
-  const finishedNodeStatuses = new Set(["completed", "failed", "cancelled", "skipped"]);
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -764,18 +765,12 @@ function renderRuns() {
   const renderProgress = (run) => {
     if (String(run.status || "").toLowerCase() !== "running") return "";
 
-    const nodeIds = getRunNodeIds(run);
-    const totalNodes = nodeIds.length;
+    const { total: totalNodes, done: progressedNodes } = runPathProgress(run.id === state.runId ? { ...run, nodes: state.nodes } : run);
     if (!totalNodes) return "";
-
-    const progressedNodes = nodeIds.filter((nodeId) => {
-      const status = String(run.nodes?.[nodeId]?.status || "pending").toLowerCase();
-      return finishedNodeStatuses.has(status);
-    }).length;
     const progressPercent = Math.max(0, Math.min(100, (progressedNodes / totalNodes) * 100));
 
     return `
-      <div class="runs-progress" aria-label="Run progress ${progressedNodes} of ${totalNodes} nodes finished">
+      <div class="runs-progress" role="progressbar" aria-valuemin="0" aria-valuemax="${totalNodes}" aria-valuenow="${progressedNodes}" aria-label="${progressedNodes} of ${totalNodes} stages settled on the longest acyclic path" title="${progressedNodes}/${totalNodes} path stages settled">
         <div class="runs-progress-track" aria-hidden="true">
           <div class="runs-progress-fill" style="width:${progressPercent}%"></div>
         </div>
@@ -827,44 +822,84 @@ function renderRuns() {
   });
 }
 
-const expandedCandidates = new Set();
-function isPotentialNode(node, nodeMap) {
-  return Boolean(node?.activation) && (!nodeMap[node.id] || nodeMap[node.id].status === 'pending');
+let showDefaultGraph = false;
+
+function hasReachedNode(result) {
+  if (!result) return false;
+  return Boolean(result.started_at || result.current_attempt > 0 || result.attempts?.length
+    || ['queued', 'ready', 'running', 'retrying', 'completed', 'failed'].includes(result.status));
 }
-function projectCandidateNodes(nodes, nodeMap, pipeline) {
-  const groups = new Map();
-  const groupByMember = new Map();
-  Object.entries(pipeline?.fanouts || {}).forEach(([group, members]) => members.forEach(id => groupByMember.set(id, group)));
-  // Short feedback paths stay explicit; only candidate previews may be folded.
-  const shortLoopNodes = new Set();
-  for (const tail of nodes) {
-    for (const target of tail.on_failure_restart || []) {
-      if (tail.id === target) shortLoopNodes.add(target);
-      if (tail.depends_on?.includes(target)) { shortLoopNodes.add(target); shortLoopNodes.add(tail.id); }
+
+function graphDependencies(node) {
+  return [...new Set([...(node.depends_on || []), ...(node.depends_on_failure || []),
+    ...(node.activation ? [node.activation.source] : [])])];
+}
+
+function isPotentialNode(node, nodeMap) {
+  return Boolean(node) && !hasReachedNode(nodeMap[node.id]);
+}
+
+function projectMonitorNodes(nodes, nodeMap, pipeline, showDefault = showDefaultGraph) {
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const visible = new Set(nodes.filter(node => hasReachedNode(nodeMap[node.id])).map(node => node.id));
+  if (showDefault) {
+    const children = new Map(nodes.map(node => [node.id, []]));
+    for (const node of nodes) {
+      for (const parent of graphDependencies(node)) children.get(parent)?.push(node.id);
+      for (const target of node.on_failure_restart || []) children.get(node.id).push(target);
+    }
+    const roots = nodes.filter(node => !graphDependencies(node).length).map(node => node.id);
+    const pending = visible.size ? [...visible] : roots.length ? roots : nodes.map(node => node.id);
+    const visited = new Set();
+    while (pending.length) {
+      const id = pending.pop();
+      if (visited.has(id) || !byId.has(id)) continue;
+      visited.add(id);
+      if (!visible.has(id) && ['skipped', 'cancelled'].includes(nodeMap[id]?.status)) continue;
+      visible.add(id);
+      pending.push(...children.get(id));
     }
   }
-  for (const node of nodes) {
-    if (!isPotentialNode(node, nodeMap) || shortLoopNodes.has(node.id)) continue;
-    const group = groupByMember.get(node.id) || node.id;
-    const key = `${state.runId}:${node.activation.source}:${group}`;
-    if (expandedCandidates.has(key) || state.selectedNodeId === node.id) continue;
-    if (!groups.has(key)) groups.set(key, { group, members: [] });
-    groups.get(key).members.push(node);
-  }
   const aliases = new Map();
-  const previews = [];
-  for (const [key, { group, members }] of groups) {
-    const id = `@candidate:${members[0].id}`;
-    members.forEach(node => aliases.set(node.id, id));
-    previews.push({ ...members[0], id, previewKey: key, previewMembers: members.map(node => node.id),
-      displayLabel: `… ${truncateGraphLabel(group, 8)} (${members.length})`,
-      depends_on: [...new Set(members.flatMap(node => node.depends_on || []))],
-      on_failure_restart: [...new Set(members.flatMap(node => node.on_failure_restart || []))] });
+  const groups = [];
+  for (const [group, ids] of Object.entries(pipeline?.fanouts || {})) {
+    const members = ids.filter(id => visible.has(id) && !hasReachedNode(nodeMap[id]) && !aliases.has(id));
+    if (!members.length) continue;
+    const id = members[0];
+    members.forEach(member => aliases.set(member, id));
+    groups.push({ ...byId.get(id), id, previewMembers: members,
+      displayLabel: `${truncateGraphLabel(group, 10)} ×${members.length}`,
+      depends_on: [...new Set(members.flatMap(member => graphDependencies(byId.get(member))))],
+      on_failure_restart: [...new Set(members.flatMap(member => byId.get(member).on_failure_restart || []))] });
   }
-  return [...nodes.filter(node => !aliases.has(node.id)), ...previews].map(node => ({ ...node,
-    depends_on: [...new Set((node.depends_on || []).map(id => aliases.get(id) || id))].filter(id => id !== node.id),
-    on_failure_restart: [...new Set((node.on_failure_restart || []).map(id => aliases.get(id) || id))],
+  return [...nodes.filter(node => visible.has(node.id) && !aliases.has(node.id)), ...groups].map(node => ({ ...node,
+    depends_on: [...new Set(graphDependencies(node).map(id => aliases.get(id) || id))].filter(id => visible.has(id)),
+    on_failure_restart: [...new Set((node.on_failure_restart || []).map(id => aliases.get(id) || id))].filter(id => visible.has(id)),
   }));
+}
+
+function runPathProgress(run) {
+  // Restart edges do not add stages. Cut dependency back edges defensively for legacy cyclic graphs.
+  const nodes = run.pipeline?.nodes || [];
+  const byId = new Map(nodes.map(node => [node.id, node]));
+  const visiting = new Set();
+  const lengths = new Map();
+  const finished = new Set(['completed', 'failed', 'cancelled', 'skipped']);
+  function visit(id) {
+    if (lengths.has(id)) return lengths.get(id);
+    visiting.add(id);
+    const parents = graphDependencies(byId.get(id)).filter(parent => byId.has(parent) && !visiting.has(parent)).map(visit);
+    visiting.delete(id);
+    const total = 1 + Math.max(0, ...parents.map(parent => parent.total));
+    const settled = finished.has(run.nodes?.[id]?.status) && parents.every(parent => parent.done === parent.total);
+    const done = settled ? total : Math.max(0, ...parents.map(parent => parent.done));
+    const result = { total, done };
+    lengths.set(id, result);
+    return result;
+  }
+  nodes.forEach(node => visit(node.id));
+  return { total: Math.max(0, ...[...lengths.values()].map(value => value.total)),
+    done: Math.max(0, ...[...lengths.values()].map(value => value.done)) };
 }
 
 function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
@@ -892,9 +927,9 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   pipelineNodeList.forEach(appendNode);
   if (requestedNodeList !== pipelineNodeList) requestedNodeList.forEach(appendNode);
   const nodeMap = nodeStatusMap || state.nodes;
-  nodes = projectCandidateNodes(nodes, nodeMap, pipeline);
+  nodes = projectMonitorNodes(nodes, nodeMap, pipeline);
   const nodeById = Object.fromEntries(nodes.map(node => [node.id, node]));
-  if (!nodes.length) {
+  if (!pipelineNodeList.length && !nodes.length) {
     container.innerHTML = renderEmptyState("Choose an execution from run history to explore its dependencies and progress.", "Your workflow, at a glance");
     return;
   }
@@ -938,6 +973,17 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   svg.style.webkitUserSelect = "none";
   svg.style.touchAction = "none";
   container.appendChild(svg);
+
+  if (!nodes.length) {
+    const message = document.createElementNS(ns, "text");
+    message.setAttribute("x", "50%");
+    message.setAttribute("y", "50%");
+    message.setAttribute("text-anchor", "middle");
+    message.setAttribute("fill", "var(--muted)");
+    message.setAttribute("font-size", "12");
+    message.textContent = "No nodes reached yet. Use Show default to preview the workflow.";
+    svg.appendChild(message);
+  }
 
   const controls = document.createElement("div");
   controls.className = "graph-controls";
@@ -1098,7 +1144,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
 
   [
     ["Fit", () => fitGraphView()],
-    ["Compact", () => { expandedCandidates.clear(); renderGraph(); }],
+    ["Show default", () => { showDefaultGraph = !showDefaultGraph; renderGraph(); }],
     ["Zoom+", () => scaleGraphView(1.2)],
     ["Zoom-", () => scaleGraphView(0.8)],
     ["100%", () => resetGraphZoom()],
@@ -1106,6 +1152,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
+    if (label === "Show default") button.setAttribute("aria-pressed", String(showDefaultGraph));
     button.addEventListener("click", onClick);
     controls.appendChild(button);
   });
@@ -1325,7 +1372,8 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
         path: edge,
         sourceIds: [dependency],
         update: () => {
-          edge.setAttribute("d", forwardPath(dependency, node.id));
+          edge.setAttribute("d", dependency === node.id || layout.positions[dependency].x >= layout.positions[node.id].x
+            ? cyclePath(dependency, node.id) : forwardPath(dependency, node.id));
         },
       });
     }
@@ -1342,6 +1390,9 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
       edge.setAttribute("stroke", edgeColor);
       edge.setAttribute("stroke-width", "2");
       edge.dataset.kind = "restart";
+      edge.dataset.fromNode = node.id;
+      edge.dataset.toNode = restartTarget;
+      if (isPotentialNode(node, nodeMap) || isPotentialNode(nodeById[restartTarget], nodeMap)) edge.setAttribute('stroke-dasharray', '6,4');
       const restartTitle = document.createElementNS(ns, 'title');
       restartTitle.textContent = 'Failure restart';
       edge.appendChild(restartTitle);
@@ -1394,7 +1445,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     const statusColor = graphStatusColor(status);
     const group = document.createElementNS(ns, "g");
     group.dataset.nodeId = node.id;
-    group.dataset.kind = node.previewKey ? 'candidate-preview' : ['python', 'shell', 'command', 'sync'].includes(node.agent) ? 'utility' : 'agent';
+    group.dataset.kind = node.previewMembers ? 'worker-preview' : ['python', 'shell', 'command', 'sync'].includes(node.agent) ? 'utility' : 'agent';
     group.style.cursor = "grab";
 
     const selection = document.createElementNS(ns, "rect");
@@ -1447,11 +1498,6 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     group.addEventListener("click", () => {
       if (suppressClick) {
         suppressClick = false;
-        return;
-      }
-      if (node.previewKey) {
-        expandedCandidates.add(node.previewKey);
-        renderGraph();
         return;
       }
       state.selectedNodeId = node.id;

@@ -893,3 +893,5 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2
 #detail .log-line { margin: 0; padding: 0; border: 0 !important; white-space: pre-wrap; overflow-wrap: anywhere; min-height: 1.6em; font-size: 12px; line-height: 1.6; }
 #detail .log-view .log-viewport { background: var(--canvas); }
 .log-window-label { min-height: 32px; }
+
+.app-shell .graph-controls button[aria-pressed="true"] { color: var(--link); border-color: var(--link); }

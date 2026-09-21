@@ -197,17 +197,18 @@ for (const tab of ['Stdout', 'Stderr', 'Trace']) {
   });
 }
 
-test('possible branches use dashed previews while executed nodes remain explicit', async ({ page }) => {
-  await mock(page);
-  const run = fixture('branched', 'running', ['gate', 'worker_0', 'worker_1', 'worker_2', 'join']);
+test('reached-only view expands every future branch and one parallel worker preview', async ({ page }) => {
+  const errors = await mock(page);
+  const run = fixture('branched', 'running', ['gate', 'worker_0', 'worker_1', 'worker_2', 'alternative', 'join']);
   run.pipeline.fanouts = { worker: ['worker_0', 'worker_1', 'worker_2'] };
   run.nodes.gate.status = 'running';
-  for (const node of run.pipeline.nodes.slice(1, 4)) {
-    node.activation = { source: 'gate', path: ['count'] };
-    run.nodes[node.id].status = 'pending';
+  for (const node of run.pipeline.nodes.slice(1)) {
+    run.nodes[node.id] = { status: 'pending', current_attempt: 0, attempts: [] };
   }
-  run.pipeline.nodes[4].depends_on = run.pipeline.fanouts.worker;
-  run.nodes.join.status = 'pending';
+  run.pipeline.nodes[5].depends_on = [...run.pipeline.fanouts.worker, 'alternative'];
+  run.pipeline.nodes[4].depends_on = [];
+  run.pipeline.nodes[4].depends_on_failure = ['gate'];
+  run.pipeline.nodes[4].on_failure_restart = ['gate'];
   await page.route('**/api/runs**', route => {
     const path = new URL(route.request().url()).pathname;
     if (path === '/api/runs') return route.fulfill({ json: [run] });
@@ -215,40 +216,89 @@ test('possible branches use dashed previews while executed nodes remain explicit
     return route.fallback();
   });
   await page.reload();
-  const preview = page.locator('[data-kind="candidate-preview"]');
+  await expect(page.locator('[data-node-id="gate"]')).toBeVisible();
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(1);
+  const toggle = page.getByRole('button', { name: 'Show default', exact: true });
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  const preview = page.locator('[data-kind="worker-preview"]');
   await expect(preview).toHaveCount(1);
-  await expect(preview).toContainText('… worker (3)');
+  await expect(preview).toContainText('worker ×3');
+  await expect(page.locator('[data-node-id="alternative"]')).toBeVisible();
+  await expect(page.locator('[data-node-id="join"]')).toBeVisible();
   await expect(page.locator('path[data-kind="potential"]').first()).toHaveAttribute('stroke-dasharray', '6,4');
-  await preview.click();
-  await expect(preview).toHaveCount(0);
-  await expect(page.locator('[data-node-id="worker_0"]')).toBeVisible();
+  await expect(page.locator('path[data-kind="restart"]')).toHaveAttribute('data-to-node', 'gate');
   await page.evaluate(() => applyEvent({ type: 'node_started', node_id: 'worker_0', data: {} }));
-  await page.getByRole('button', { name: 'Compact', exact: true }).click();
-  await expect(preview).toContainText('… worker (2)');
+  await expect(preview).toContainText('worker ×2');
+  await expect(page.locator('[data-node-id="worker_0"]')).toHaveAttribute('data-kind', 'utility');
+  await toggle.click();
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(2);
   await expect(page.locator('[data-node-id="worker_0"]')).toBeVisible();
   await expect(page.locator('path[data-to-node="worker_0"]')).not.toHaveAttribute('stroke-dasharray');
+  expect(errors).toEqual([]);
 });
 
-test('candidate previews keep short feedback paths explicit and fold length three', async ({ page }) => {
+test('projection retains execution history and omits skipped, cancelled and unrelated future nodes', async ({ page }) => {
   await mock(page);
-  const results = await page.evaluate(() => {
-    const gate = { id: 'gate', agent: 'python', depends_on: [] };
-    const child = { id: 'child', agent: 'python', depends_on: ['gate'], activation: { source: 'gate' }, on_failure_restart: ['gate'] };
-    const short = projectCandidateNodes([gate, child], {}, { nodes: [] });
-    const tail = { id: 'tail', depends_on: ['child'], on_failure_restart: ['gate'] };
-    const long = projectCandidateNodes([gate, { ...child, on_failure_restart: [] }, tail], {}, { nodes: [] });
-    return { short: short.filter(node => node.previewKey).length, long: long.filter(node => node.previewKey).length };
+  const result = await page.evaluate(() => {
+    const nodes = [{ id: 'root' }, { id: 'skipped', depends_on: ['root'] },
+      { id: 'cancelled', depends_on: ['root'] }, { id: 'reset', depends_on: ['root'] },
+      { id: 'future', depends_on: ['reset'] }, { id: 'unrelated' }];
+    const statuses = { root: { status: 'completed' }, skipped: { status: 'skipped' },
+      cancelled: { status: 'cancelled' }, reset: { status: 'pending', current_attempt: 2 } };
+    return { reached: projectMonitorNodes(nodes, statuses, {}, false).map(node => node.id),
+      defaults: projectMonitorNodes(nodes, statuses, {}, true).map(node => node.id) };
   });
-  expect(results).toEqual({ short: 0, long: 1 });
+  expect(result).toEqual({ reached: ['root', 'reset'], defaults: ['root', 'reset', 'future'] });
 });
 
+test('an unstarted run still offers Show default without exposing execution controls', async ({ page }) => {
+  await mock(page);
+  await expect(page.locator('[data-node-id="prepare"]')).toBeVisible();
+  await page.evaluate(() => {
+    state.pipeline = { nodes: [{ id: 'root' }, { id: 'future', depends_on: ['root'] }] };
+    state.nodes = {};
+    renderGraph();
+  });
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Show default', exact: true }).click();
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(2);
+});
+
+test('progress counts the longest dependency path, not worker count or restart iterations', async ({ page }) => {
+  await mock(page);
+  await expect(page.locator('[data-node-id="prepare"]')).toBeVisible();
+  const result = await page.evaluate(() => {
+    const nodes = [{ id: 'root' }, ...Array.from({ length: 20 }, (_, i) => ({ id: `worker_${i}`, depends_on: ['root'] })),
+      { id: 'join', depends_on: Array.from({ length: 20 }, (_, i) => `worker_${i}`), on_failure_restart: ['root'] },
+      { id: 'end', depends_on: ['join'] }];
+    const run = { ...state.runs[0], pipeline: { nodes }, nodes: Object.fromEntries(nodes.map(node => [node.id,
+      { status: node.id === 'join' ? 'running' : node.id === 'end' ? 'pending' : 'completed', current_attempt: 5 }])) };
+    state.runs = [run];
+    state.nodes = run.nodes;
+    renderRuns();
+    const parallel = runPathProgress(run);
+    run.nodes.worker_0.status = 'running';
+    run.nodes.join.status = 'completed';
+    const unfinishedDependency = runPathProgress(run);
+    run.pipeline.nodes = [{ id: 'a', depends_on: ['b'] }, { id: 'b', depends_on: ['a'] }];
+    const cyclic = runPathProgress(run);
+    return { parallel, unfinishedDependency, cyclic };
+  });
+  expect(result.parallel).toEqual({ total: 4, done: 2 });
+  expect(result.unfinishedDependency).toEqual({ total: 4, done: 2 });
+  expect(result.cyclic.total).toBe(2);
+  await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuemax', '4');
+  await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '2');
+});
 
 test('self restart is a visible solid loop and Fit includes its path', async ({ page }) => {
   await mock(page);
   await expect(page.locator('[data-node-id="prepare"]')).toBeVisible();
   await page.evaluate(() => {
     state.pipeline = { name: 'self', nodes: [{ id: 'loop', agent: 'python', depends_on: [], on_failure_restart: ['loop'] }] };
-    state.nodes = { loop: { status: 'pending' } };
+    state.nodes = { loop: { status: 'running' } };
     state.selectedNodeId = null;
     renderGraph();
   });
@@ -263,4 +313,36 @@ test('self restart is a visible solid loop and Fit includes its path', async ({ 
   expect(geometry.width).toBeGreaterThan(30);
   expect(geometry.height).toBeGreaterThan(30);
   expect(geometry.inside).toBe(true);
+});
+
+
+test('path progress follows streamed completions immediately', async ({ page }) => {
+  await mock(page);
+  await expect(page.locator('[data-node-id="prepare"]')).toBeVisible();
+  const progress = page.locator('[data-open-run="first-run"] [role="progressbar"]');
+  await expect(progress).toHaveAttribute('aria-valuenow', '1');
+  await page.evaluate(() => applyEvent({ type: 'node_completed', node_id: 'execute', data: { exit_code: 0 } }));
+  await expect(progress).toHaveAttribute('aria-valuenow', '2');
+});
+
+test('multi-node restart points back to its target and remains inside Fit', async ({ page }) => {
+  await mock(page);
+  await expect(page.locator('[data-node-id="prepare"]')).toBeVisible();
+  await page.evaluate(() => {
+    state.pipeline = { nodes: [{ id: 'a' }, { id: 'b', depends_on: ['a'] },
+      { id: 'c', depends_on: ['b'], on_failure_restart: ['a'] }] };
+    state.nodes = { a: { status: 'completed' }, b: { status: 'completed' }, c: { status: 'running' } };
+    renderGraph();
+  });
+  const edge = page.locator('path[data-kind="restart"]');
+  await expect(edge).toHaveAttribute('data-from-node', 'c');
+  await expect(edge).toHaveAttribute('data-to-node', 'a');
+  await expect(edge).toHaveAttribute('marker-end', 'url(#graph-arrow-cycle)');
+  const geometry = await edge.evaluate(el => {
+    const start = el.getPointAtLength(0), end = el.getPointAtLength(el.getTotalLength());
+    const box = el.getBBox(), view = el.ownerSVGElement.viewBox.baseVal;
+    return { backwards: end.x < start.x, inside: box.x >= view.x && box.y >= view.y
+      && box.x + box.width <= view.x + view.width && box.y + box.height <= view.y + view.height };
+  });
+  expect(geometry).toEqual({ backwards: true, inside: true });
 });

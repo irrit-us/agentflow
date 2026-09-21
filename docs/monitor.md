@@ -6,7 +6,13 @@ data. They illustrate the interface, not a live execution or benchmark result.
 
 The monitor uses one fixed theme, with square corners outside the main graph.
 It supports draggable nodes, canvas panning and zooming, dependency arrows,
-and a tabbed node inspector.
+and a tabbed node inspector. By default, only reached nodes appear. The graph's
+**Show default** toggle reveals downstream possibilities, with one representative
+per unreached parallel worker group and all alternative branches. Directed
+return arcs show cycles. History progress counts settled stages against the
+longest acyclic dependency path, independent of worker count or retry count.
+See [Hybrid orchestration](hybrid-orchestration.md#monitor-notation) for the exact
+display and progress rules.
 
 ## Read-only behavior and live logs
 

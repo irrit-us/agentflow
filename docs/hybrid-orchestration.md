@@ -70,19 +70,36 @@ AgentFlow records decisions but does not claim Temporal-style durable replay.
 
 ## Monitor notation
 
-The monitor remains read-only. Dashed edges identify unresolved candidate
-activation. Resolved dependency and restart edges are solid; a restart is not a
-possible-creation edge. `…` represents omitted candidate definitions and shows
-their count; click the preview to expand, or use Compact to restore folding.
-Python and external-command nodes participate in the same graph and inspector.
+The monitor remains read-only. By default it shows only reached nodes: queued,
+ready, active, completed or failed nodes, and nodes with execution history even
+when a restart resets their status. Never-started skipped or cancelled nodes are
+omitted. Python and external-command nodes use the same graph and inspector.
 
-The current interpretation of feedback length counts nodes in the feedback path:
-a self-loop or two-node feedback path stays explicit. Candidate definitions in
-paths of three or more nodes, and candidates outside feedback paths, can be
-folded. Already running or terminal nodes remain visible. This is a projection
-of the graph, not a mutation of its dependency or restart semantics.
+**Show default**, in the graph corner, reveals all downstream possibilities from
+the reached nodes, including every alternative branch and restart target. Before
+any node is reached, it previews the declared workflow. Unrelated disconnected
+future work and already-skipped alternatives are omitted after execution starts.
+Unreached members of each declared parallel fanout appear as one `worker ×N`
+representative; reached workers remain individually inspectable. This grouping
+does not merge distinct branches. There is no ellipsis or path-length folding.
 
-![Read-only hybrid graph with a code gate and a dashed worker candidate preview](images/monitor/hybrid-candidates.png)
+Dashed edges connect possible future nodes. Directed return arcs express restart
+paths, including self-loops; arrows between reached nodes are solid. These arcs
+show declared restart relationships, not proof that a restart has occurred.
+The toggle, node dragging, and inspection change only the local display.
 
-The preview uses mocked data; the candidate box is a display projection of three
-declared worker definitions awaiting an activation decision.
+History progress uses the longest acyclic dependency path in the declared graph
+as its denominator, measured in node stages rather than total parallel workers.
+Its numerator is the deepest settled prefix, advancing a stage only when its
+dependencies are settled. Completed, failed, cancelled, and skipped nodes settle
+a stage; this measures scheduling progress, not success or elapsed-time estimates.
+Restart edges and retry counts do not add stages. Dependency back edges in legacy
+cyclic input are defensively excluded during traversal. The denominator is
+independent of Show default and of which branches have been chosen.
+
+![Reached nodes in the read-only hybrid graph](images/monitor/hybrid-reached.png)
+
+![Show default reveals branches, one parallel worker representative, and a restart arc](images/monitor/hybrid-candidates.png)
+
+Both previews use mocked data and show the same workflow with Show default off
+and on, respectively.
