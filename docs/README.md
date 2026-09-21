@@ -16,3 +16,5 @@ Detailed documentation for AgentFlow lives here.
 - [Runtime lifecycle primitives](runtime-lifecycle.md): process ownership, work-item sessions, and content identity.
 
 - [Lifecycle evaluation](lifecycle-evaluation.md): alternatives, fault injection, benchmark evidence, and follow-up acceptance gates.
+
+- [Harness placement](harness-placement.md): skill/Bash, native tools, MCP, and runtime enforcement boundaries.
