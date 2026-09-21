@@ -50,82 +50,39 @@ available execution route and the underlying permissions.
   Pi may normalize arguments before calling an extension; backend validation is
   still required. No guarantee is inferred for a different host/version.
 
-## Applying the decision in the authoring harness
+## Framework and application ownership
 
-| Operation | Placement now | Reason |
-| --- | --- | --- |
-| Choosing a challenge, reasoning about difficulty, explaining evidence | Role instructions; skills remain an option for reusable guidance | Requires judgment; the domain procedure evolves |
-| Listing agents or requesting steer/kill/resume | Pi native tools, DSH MCP tools, human/skill CLI | Agent decides when to intervene; all interfaces reach the same backend |
-| Validating management arguments and target slot | Shared backend, repeated when watchdog reads persisted requests | Changing interfaces or writing malformed request files must not remove the check |
-| Determining whether a role handoff satisfies its schema | Required deterministic graph node after every role | Independent of model-selected preflight and claimed success markers |
-| Deciding whether to archive a delivery | Existing final upload gate plus schema revalidation | Prevent direct watchdog archival from bypassing graph checks |
-| Process timeouts and cancellation cleanup | Runner code | Must work while the agent is blocked or unavailable |
-| Operator guidance | Prompt/tool descriptions | Guidance is not authenticated operator identity or a hard budget ceiling |
+AgentFlow supplies execution, lifecycle, serialization, adapter integration,
+optional typed node/profile interfaces, and observable scheduler transitions.
+It does not select business roles, prompts, goals, task decomposition, handoff
+schemas, release criteria, or a preferred collaboration topology. Those belong
+to application graphs, external skills, or illustrative examples.
 
-Use one shared capability catalog and domain backend, then thin adapters.
-`authoring_workflow/tools/agent_tools.json` defines the six management tools.
-Pi registers those schemas and invokes the JSON CLI asynchronously. MCP returns
-structured results and delegates to the same dispatcher. The shell CLI delegates
-to that backend too. No extra MCP server was inserted in Pi, where native tools
-already fit; no parallel skill was added just to duplicate six tool descriptions.
+A caller can use ordinary shell/agent nodes without ActorNode or AgentProfile.
+Typed actors describe caller-defined behavior; they do not register a fixed set
+of roles. Scheduling controls constrain only the actions explicitly delegated by
+a submitted graph. A rerun cap is optional and defaults to unset in the library;
+no application-specific numeric cap is introduced by the framework.
 
-The model can still run the handoff validator for early feedback. The runtime
-always reruns it before advancing. Invalid output stops the slot; the existing
-bounded, session-aware recovery policy owns retries. We reuse AgentFlow's shell
-node and dependency machinery rather than inventing a new general hook API.
+Use deterministic runtime checks when the application requires an invariant.
+The framework supplies the execution mechanism; it must not install a particular
+application's handoff gates or success criteria as mandatory behavior for other
+applications. Native tools and MCP should adapt the same capability backend when
+cross-host reuse is needed; neither transport chooses the workflow's objectives.
 
-Receipts have precise meanings: `queued` means a request file was written;
-`forwarded` means the Pi bridge accepted it for forwarding; a bridge timeout
-means `unknown`, not success. None proves the target model applied the steering.
-The `role` argument is audit metadata; cancellation currently targets the whole
-slot. Tool descriptions now make this distinction visible to the caller.
+The authoring application's role topology, tool catalog, schema gates, and
+historical comparative evidence are maintained in its
+[application repository](https://github.com/irrit-us/xpertAuthorFlow/blob/master/authoring_workflow/docs/harness-placement.md).
+They are an application of these primitives, not the AgentFlow contract.
 
-## Adversarial contract evaluation
+## Evidence limits
 
-Twenty cases from `test_harness_boundaries.py` were run against a temporary copy
-of authoring baseline `8ab9bfe`, then against the correction. All twenty failed
-on the baseline and pass now. They cover twelve invalid submission cases across
-MCP and direct backend, bridge timeout/command mapping, mandatory graph topology,
-archive revalidation, and four schema-validator failure cases. The baseline copy
-uses only temporary state and mocked external calls; no live agents were killed.
+Fault-injection and contract tests establish deterministic runtime properties.
+They do not establish that one tool transport improves model task quality, cost,
+or latency. A model comparison must keep backend semantics and task distribution
+constant and measure repeated runs. No such model A/B superiority claim is made.
 
-Additional tests cover JSON CLI parity, valid request receipts, persisted-request
-validation at the watchdog, and five Pi extension cases: catalog equality,
-nonblocking argv invocation/cancellation forwarding, backend error reporting,
-abort behavior, and prevention of already-cancelled dispatch. The required graph paths are inspected and their validator
-entry point is executed on nonempty but invalid JSON without a model call.
-
-This is evidence of deterministic interface/enforcement behavior. It is not an
-LLM A/B study of whether agents select native tools more accurately than Bash,
-or a measurement of token cost, MCP overhead, or production steering success.
-A model-controlled tool's schema cannot establish that the model will call it.
-For a mandatory invariant, the runtime gate is therefore the deciding mechanism.
-
-## Limits and next focused work
-
-The workflow still grants agents host filesystem/shell access. The checker,
-control files and harness configuration are not isolated from the same OS user.
-These are enforced transitions in a trusted workflow, not tamper-proof security
-boundaries. `actor` is an audit label, not authenticated authorization. The
-existing resume action can override the automatic rerun budget; it is not a
-non-bypassable spending cap.
-
-Request files still use one pending slot per action, so concurrent submissions
-can overwrite each other. Receipt persistence is not a transactional command
-queue, and watcher acceptance is not end-to-end application acknowledgment.
-The JSON validator intentionally supports only the repository's schema subset;
-unknown assertions fail closed, while `format` is metadata, not validation.
-The bridge's forwarding acknowledgment is not Pi's correlated RPC response.
-
-The next increment should target these concrete boundaries: an owner-controlled
-budget/authorization service, unique command IDs with consume/ack semantics, and
-correlated Pi responses. If adversarial tampering is in scope, separate runtime
-identity and writable paths, remove alternate execution routes, and verify the
-OS boundary before calling a rule non-bypassable. Expanding the skill text or
-adding MCP alone does not establish that boundary.
-
-A later model experiment should hold backend semantics and tasks constant while
-varying only skill+Bash versus native/MCP exposure, measuring tool selection,
-argument repair, completion, tokens and latency over repeated runs. Until then,
-choose native Pi and MCP DSH based on verified host compatibility and reuse,
-not an unmeasured assertion that one transport is universally better.
+See [scheduler receipts](control-receipts.md) for precise acknowledgment,
+idempotency scope, and persistence limits. A same-UID filesystem and a container
+marker are not independent authorization boundaries. A deployment requiring
+adversarial isolation must provide separate identities and controlled write access.

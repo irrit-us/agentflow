@@ -13,6 +13,7 @@ from agentflow.agents.base import AgentAdapter
 from agentflow.agents.registry import AdapterRegistry
 from agentflow.inference import SkyInferenceService
 from agentflow.orchestrator import Orchestrator
+from agentflow.resilient import ResilientOrchestrator
 from agentflow.prepared import ExecutionPaths, PreparedExecution
 from agentflow.runners.registry import RunnerRegistry
 from agentflow.specs import AgentKind, PipelineSpec
@@ -765,10 +766,11 @@ async def test_orchestrator_reschedules_periodic_nodes_until_watched_fanout_sett
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_periodic_nodes_can_cancel_and_rerun_watched_members_from_logs(tmp_path: Path):
+@pytest.mark.parametrize("orchestrator_type", [Orchestrator, ResilientOrchestrator])
+async def test_orchestrator_periodic_nodes_can_cancel_and_rerun_watched_members_from_logs(tmp_path: Path, orchestrator_type):
     adapters = AdapterRegistry()
     adapters.register(AgentKind.CODEX, PeriodicControlAdapter())
-    orchestrator = Orchestrator(store=RunStore(tmp_path / "runs"), adapters=adapters, runners=RunnerRegistry())
+    orchestrator = orchestrator_type(store=RunStore(tmp_path / "runs"), adapters=adapters, runners=RunnerRegistry())
     pipeline = PipelineSpec.model_validate(
         {
             "name": "periodic-control",

@@ -1,6 +1,6 @@
 # Actors and agent profiles
 
-`ActorNode` supplies typed role behavior and binds to the existing `NodeBuilder` /
+`ActorNode` is an optional interface for application-defined typed node behavior and binds to the existing `NodeBuilder` /
 `NodeSpec` graph model. It does not introduce a second scheduler. Subclasses declare
 `actor_id`, `actor_version`, `input_type`, `output_type`, `instructions(inputs)`,
 `requirements()`, and `output_artifacts(inputs)`. Artifact contracts describe
@@ -32,12 +32,15 @@ with Graph("writing"):
     )
 ```
 
-`InstructionBundle.materialize(new_directory)` writes an immutable bundle and
+`InstructionBundle.materialize(new_directory)` writes a read-only bundle and
 returns its SHA-256 identity. The application validates and mounts this directory.
 Every bound node records typed inputs and schemas, output contracts, actor version,
 capabilities, bundle digest, and selected profile digest. Profiles cannot be
 overridden by extra binding options; resolve a new explicit profile when changing
-backend settings. Instruction rendering should be pure and deterministic.
+backend settings. Instruction rendering should be pure and deterministic. Binding renders one bundle
+for both the prompt and its recorded digest. Resource paths use canonical relative
+POSIX syntax; aliases, Windows separators/drives, and parent-file collisions are
+rejected before writing. Read-only permissions are not a same-user security boundary.
 
 `AgentProfile.node_options(target_kind="docker", required_capabilities=...)`
 validates requested features before producing `NodeSpec` fields. Call it during

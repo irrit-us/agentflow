@@ -47,8 +47,12 @@ class InstructionBundle(BaseModel):
     def validate_resources(cls, value: dict[str, str]) -> dict[str, str]:
         for name in value:
             ArtifactContract(name=name, path=name)
-            if name in {"instructions.md", "bundle.json"}:
+            if PurePosixPath(name).as_posix() != name or any(char in name for char in ("\\", ":", "\x00")):
+                raise ValueError("instruction resources require canonical portable relative POSIX paths")
+            if name.split("/")[0] in {"instructions.md", "bundle.json"}:
                 raise ValueError(f"reserved instruction bundle resource: {name}")
+            if any(parent.as_posix() in value for parent in PurePosixPath(name).parents if parent != PurePosixPath(".")):
+                raise ValueError(f"instruction resource conflicts with a parent file: {name}")
         return value
 
     @property
@@ -57,7 +61,7 @@ class InstructionBundle(BaseModel):
         return hashlib.sha256(encoded).hexdigest()
 
     def materialize(self, directory: Path) -> str:
-        """Create a new immutable resource tree; host code owns its mount policy."""
+        """Create a new read-only resource tree; host code owns isolation and mounts."""
         directory.mkdir(parents=True, exist_ok=False)
         payload = {"instructions.md": self.text, **self.resources}
         payload["bundle.json"] = json.dumps({"schema_version": 1, "sha256": self.identity}, sort_keys=True)
@@ -89,9 +93,9 @@ class ActorNode(ABC, Generic[InputT, OutputT]):
     def output_artifacts(self, inputs: InputT) -> list[ArtifactContract]:
         return []
 
-    def binding_metadata(self, inputs: InputT | dict[str, Any]) -> dict[str, Any]:
+    def binding_metadata(self, inputs: InputT | dict[str, Any], *, instruction_bundle: InstructionBundle | None = None) -> dict[str, Any]:
         typed = self.input_type.model_validate(inputs)
-        bundle = self.instructions(typed)
+        bundle = instruction_bundle if instruction_bundle is not None else self.instructions(typed)
         return {
             "schema_version": 1, "id": self.actor_id, "version": self.actor_version,
             "inputs": typed.model_dump(mode="json"),
@@ -113,8 +117,9 @@ class ActorNode(ABC, Generic[InputT, OutputT]):
         if overlap:
             raise ValueError(f"actor binding cannot override resolved profile fields: {sorted(overlap)}")
         options.update(node_options)
-        options.update(target=target, actor=self.binding_metadata(typed))
-        prompt = self.instructions(typed).text
+        bundle = self.instructions(typed)
+        options.update(target=target, actor=self.binding_metadata(typed, instruction_bundle=bundle))
+        prompt = bundle.text
         if graph is not None:
             return NodeBuilder(dag=graph, id=node_id, agent=profile.agent, prompt=prompt, kwargs=options)
         return agent(profile.agent, task_id=node_id, prompt=prompt, **options)

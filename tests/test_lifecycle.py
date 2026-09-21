@@ -97,3 +97,23 @@ async def test_preparation_failure_becomes_terminal_and_persisted(tmp_path: Path
     assert result.nodes["test"].finished_at
     assert not result.nodes["test"].success
     assert list((tmp_path / "runs").rglob("exception.json"))
+
+
+@pytest.mark.asyncio
+async def test_resilient_orchestrator_preserves_periodic_control_semantics(tmp_path, monkeypatch):
+    from agentflow.orchestrator import Orchestrator
+
+    seen = {}
+    expected = object()
+
+    async def execute(self, run_id, node_id, **kwargs):
+        seen.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(Orchestrator, '_execute_node', execute)
+    orchestrator = ResilientOrchestrator(store=RunStore(tmp_path / 'runs'))
+    result = await orchestrator._execute_node('run', 'controller', periodic_tick_number=2,
+        periodic_tick_started_at='2026-09-21T00:00:00Z', preserve_prior_action_output=True)
+    assert result is expected
+    assert seen == {'periodic_tick_number': 2, 'periodic_tick_started_at': '2026-09-21T00:00:00Z',
+                    'preserve_prior_action_output': True}

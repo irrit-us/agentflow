@@ -164,3 +164,34 @@ def test_terminus_prepares_real_controller_with_reference_only_configuration(tmp
     assert "DockerClient" not in controller
     with pytest.raises(ValueError, match="target local"):
         TerminusAdapter().prepare(NodeSpec(id="t", agent="terminus", prompt="x", model="x"), "x", paths(tmp_path))
+
+
+@pytest.mark.parametrize('path', ['./instructions.md', 'x/../instructions.md', 'x//file',
+                                  'C:/outside.txt', '..\\outside.txt', 'file:stream', 'bad\x00name'])
+def test_instruction_resources_reject_nonportable_or_aliased_paths(path):
+    with pytest.raises(ValidationError):
+        InstructionBundle(text='original', resources={path: 'replacement'})
+
+
+def test_actor_binding_renders_one_consistent_instruction_bundle():
+    class CountingWriter(Writer):
+        calls = 0
+
+        def instructions(self, inputs):
+            self.calls += 1
+            return InstructionBundle(text=f'render {self.calls}')
+
+    writer = CountingWriter()
+    graph = Graph('single-render')
+    writer.bind(node_id='writer', graph=graph, inputs={'subject': 'topic'},
+                profile=AgentProfile(name='default', agent='codex'), target={'kind': 'local'})
+    node = graph.to_spec().nodes[0]
+    assert writer.calls == 1
+    assert node.actor['instruction_sha256'] == InstructionBundle(text=node.prompt).identity
+
+
+@pytest.mark.parametrize('resources', [{'instructions.md/nested': 'x'}, {'bundle.json/nested': 'x'},
+                                       {'a': 'file', 'a/b': 'child'}])
+def test_instruction_resource_file_collisions_are_rejected(resources):
+    with pytest.raises(ValidationError):
+        InstructionBundle(text='original', resources=resources)

@@ -68,3 +68,12 @@ do not chase them, and do not let them block lite work.
 .venv/Scripts/python -m pytest tests/test_lite_*.py -q        # all green
 .venv/Scripts/python examples/paper_architectures/build_all.py # built N runner(s), 0 failures
 ```
+
+## Framework scope
+
+Keep the core application-neutral. Business roles, objectives, task decomposition,
+prompts, handoff schemas, release gates, and numeric workflow budgets belong in
+application repositories or explicitly optional examples. Core APIs provide
+composable mechanisms; ActorNode/AgentProfile and controller policies remain
+optional. Do not import application tool catalogs or install a fixed collaboration
+pipeline in the framework runtime.

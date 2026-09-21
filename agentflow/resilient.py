@@ -101,6 +101,7 @@ class ResilientOrchestrator(Orchestrator):
         *,
         periodic_tick_number: int | None = None,
         periodic_tick_started_at: str | None = None,
+        preserve_prior_action_output: bool = False,
     ) -> Any:
         try:
             return await super()._execute_node(
@@ -108,6 +109,7 @@ class ResilientOrchestrator(Orchestrator):
                 node_id,
                 periodic_tick_number=periodic_tick_number,
                 periodic_tick_started_at=periodic_tick_started_at,
+                preserve_prior_action_output=preserve_prior_action_output,
             )
         except Exception as error:  # noqa: BLE001 - close the host-owned run on any node error.
             record = self.store.get_run(run_id)

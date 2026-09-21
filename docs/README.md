@@ -18,3 +18,5 @@ Detailed documentation for AgentFlow lives here.
 - [Lifecycle evaluation](lifecycle-evaluation.md): alternatives, fault injection, benchmark evidence, and follow-up acceptance gates.
 
 - [Harness placement](harness-placement.md): skill/Bash, native tools, MCP, and runtime enforcement boundaries.
+
+- [2026-09-21 push review](review-2026-09-21.md): framework/application boundaries, reproduced defects, corrections, and evidence limits.
