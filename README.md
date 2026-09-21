@@ -75,6 +75,7 @@ daemon mounting, and Docker-in-Docker.
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [Core monitor previews](docs/monitor.md)
 - [CLI and operations](docs/cli.md)
 - [Pipeline reference](docs/pipelines.md)
 - [Lite agent stack](docs/lite.md)

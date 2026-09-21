@@ -3,6 +3,7 @@
 Detailed documentation for AgentFlow lives here.
 
 - [Examples guide](examples.md)
+- [Core monitor previews](monitor.md) - desktop and mobile screenshots with mocked data
 - [CLI and operations](cli.md) - includes tuned-agent evolution, registry inspection, and local-run prerequisites
 - [Lite: direct LLM agents](lite.md) - standalone client, tool-calling agent, YAML graphs, and monitor, independent of CLI-agent orchestration
 - [Lite Agent graph best practices](best-practices.md) - unified node inputs, trigger modes, Tool/resource coordination, and independent skills including MCP
