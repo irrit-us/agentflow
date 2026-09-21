@@ -18,6 +18,7 @@ from typing import Annotated, Any, Callable
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from agentflow.activation import resolve_activation
 from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.context import render_node_prompt
 from agentflow.errors import StderrClassifier, capture_execution_error
@@ -1618,6 +1619,7 @@ class Orchestrator:
                 for node_id in list(remaining)
                 if node_id not in cycle_nodes  # don't skip any node in a cycle
                 and node_id not in cycle_downstream  # don't skip nodes waiting on cycle outcome
+                and node_map[node_id].trigger_rule != "all_done"
                 and any(record.nodes[dependency].status in {NodeStatus.FAILED, NodeStatus.SKIPPED, NodeStatus.CANCELLED} for dependency in node_map[node_id].depends_on)
             ]
             for node_id in blocked:
@@ -1662,7 +1664,10 @@ class Orchestrator:
                     continue
                 node = node_map[node_id]
                 # Cycle nodes can proceed when deps are COMPLETED or FAILED
-                if node_id in cycle_nodes or node.on_failure_restart:
+                if node.trigger_rule == "all_done":
+                    if not all(record.nodes[dep].status in _TERMINAL_NODE_STATUSES for dep in node.depends_on):
+                        continue
+                elif node_id in cycle_nodes or node.on_failure_restart:
                     terminal = {NodeStatus.COMPLETED, NodeStatus.FAILED}
                     if not all(record.nodes[dep].status in terminal for dep in node.depends_on):
                         continue
@@ -1671,6 +1676,35 @@ class Orchestrator:
                 # Failure-guarded edges only fire when the dependency FAILED.
                 if not all(record.nodes[dep].status == NodeStatus.FAILED for dep in node.depends_on_failure):
                     continue
+                if node.schedule is not None and periodic_state[node_id].next_tick_at is not None and now < periodic_state[node_id].next_tick_at:
+                    continue
+                if node.activation is not None:
+                    result = record.nodes[node_id]
+                    try:
+                        if record.nodes[node.activation.source].status != NodeStatus.COMPLETED:
+                            raise ValueError("activation source did not complete successfully")
+                        enabled, decision = resolve_activation(node, pipeline, record)
+                    except (ValueError, TypeError) as exc:
+                        result.status = NodeStatus.FAILED
+                        result.error_kind = "activation_invalid"
+                        result.error_message = str(exc)
+                        result.finished_at = utcnow_iso()
+                        remaining.remove(node_id)
+                        await self._publish(run_id, "node_failed", node_id=node_id,
+                                            error_kind=result.error_kind, error_message=str(exc))
+                        await self.store.persist_run(run_id)
+                        continue
+                    await self._publish(run_id, "node_activation", node_id=node_id,
+                                        source=node.activation.source, path=node.activation.path,
+                                        decision=decision, enabled=enabled)
+                    if not enabled:
+                        result.status = NodeStatus.SKIPPED
+                        result.finished_at = utcnow_iso()
+                        remaining.remove(node_id)
+                        await self._publish(run_id, "node_skipped", node_id=node_id,
+                                            reason="activation_not_selected")
+                        await self.store.persist_run(run_id)
+                        continue
                 if node.schedule is None:
                     ready.append(node_id)
                     continue

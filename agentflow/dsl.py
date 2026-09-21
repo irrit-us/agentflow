@@ -547,6 +547,19 @@ def python_node(*, task_id: str, code: str, **kwargs: Any) -> NodeBuilder:
     return _node(AgentKind.PYTHON, task_id=task_id, prompt=code, **kwargs)
 
 
+def python_call(*, task_id: str, function: str, arguments: dict[str, Any] | None = None, **kwargs: Any) -> NodeBuilder:
+    """Call an importable Python function in the execution target; emit its JSON result."""
+    return _node(AgentKind.PYTHON, task_id=task_id, prompt=json.dumps(arguments or {}),
+                 python_callable=function, **kwargs)
+
+
+def command(*, task_id: str, argv: list[str], **kwargs: Any) -> NodeBuilder:
+    """Invoke an external program without shell interpretation."""
+    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) for arg in argv) or not argv[0]:
+        raise ValueError("argv must be a non-empty list of strings")
+    return _node(AgentKind.COMMAND, task_id=task_id, prompt=json.dumps(argv), **kwargs)
+
+
 def shell(*, task_id: str, script: str, **kwargs: Any) -> NodeBuilder:
     """Run a shell script directly. The ``script`` is executed as ``bash -c <script>``."""
     return _node(AgentKind.SHELL, task_id=task_id, prompt=script, **kwargs)

@@ -10,7 +10,7 @@ from agentflow.agents.kimi import KimiAdapter
 from agentflow.agents.opencode import OpenCodeAdapter
 from agentflow.agents.pi import PiAdapter
 from agentflow.agents.terminus import TerminusAdapter
-from agentflow.agents.util import PythonAdapter, ShellAdapter, SyncAdapter
+from agentflow.agents.util import CommandAdapter, PythonAdapter, ShellAdapter, SyncAdapter
 from agentflow.agents.zcode import ZCodeAdapter
 from agentflow.specs import AgentKind
 
@@ -30,6 +30,7 @@ class AdapterRegistry:
             AgentKind.TERMINUS: TerminusAdapter(),
             AgentKind.PYTHON: PythonAdapter(),
             AgentKind.SHELL: ShellAdapter(),
+            AgentKind.COMMAND: CommandAdapter(),
             AgentKind.SYNC: SyncAdapter(),
         }
 

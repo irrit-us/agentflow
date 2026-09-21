@@ -24,7 +24,7 @@ Raw stdout and stderr remain available for inspection; terminal color escapes
 are stripped only in the display and HTML is rendered as text.
 
 Output compatibility is checked with representative mocked records for all
-13 built-in agent kinds plus a custom provider, including attempt initialization
+14 built-in agent kinds plus a custom provider, including attempt initialization
 and retry resets, and the existing parser suite. The ZCode attempt initializer
 was corrected to avoid a slotted-dataclass `super()` failure.
 Codex, Claude, Kimi, Pi, OpenCode/Kilo, Goose, DeepSeek, and ZCode use specialized

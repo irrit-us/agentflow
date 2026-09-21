@@ -10,6 +10,7 @@ Detailed documentation for AgentFlow lives here.
 - [Paper architecture catalog](../examples/paper_architectures/README.md) - fidelity manifest and 47 buildable security-agent graph declarations
 - [Research architecture gap roadmap](research-gap-roadmap.md) - evidence-backed plan for turning paper-architecture prompt conventions into enforceable runtime contracts
 - [Pipeline reference](pipelines.md)
+- [Hybrid orchestration](hybrid-orchestration.md) - optional activation gates, Python callables, external programs, and candidate previews
 - [Testing and maintainer workflows](testing.md)
 - [Background and sources](background.md)
 - [Archived upstream README](readme.old.md) - verbatim snapshot from upstream commit `c1ca005`

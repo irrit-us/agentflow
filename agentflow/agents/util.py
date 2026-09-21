@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shlex
 
 from agentflow.prepared import ExecutionPaths, PreparedExecution
@@ -12,6 +13,23 @@ class PythonAdapter:
     """Run a Python script. The prompt is the Python code."""
 
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
+        if node.python_callable:
+            # Arguments remain data; imports happen inside the execution target.
+            arguments = json.loads(prompt)
+            if not isinstance(arguments, dict):
+                raise ValueError("python callable arguments must be a JSON object")
+            code = (
+                "import contextlib, importlib, json, sys\n"
+                "module, name = sys.argv[1].split(':', 1)\n"
+                "fn = importlib.import_module(module)\n"
+                "for part in name.split('.'): fn = getattr(fn, part)\n"
+                "with contextlib.redirect_stdout(sys.stderr): result = fn(**json.loads(sys.argv[2]))\n"
+                "print(json.dumps(result, ensure_ascii=False))\n"
+            )
+            return PreparedExecution(command=[node.executable or "python3", "-c", code,
+                                               node.python_callable, json.dumps(arguments)],
+                                     env=dict(node.env or {}), cwd=str(paths.target_workdir),
+                                     trace_kind="python", runtime_files={}, stdin=None)
         return PreparedExecution(
             command=["python3", "-c", prompt],
             env=dict(node.env or {}),
@@ -129,3 +147,15 @@ echo "SYNC_OK mode=full"
             runtime_files={},
             stdin=None,
         )
+
+
+class CommandAdapter:
+    """Invoke an external program with an argument vector, without a shell."""
+
+    def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
+        argv = json.loads(prompt)
+        if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) for arg in argv) or not argv[0]:
+            raise ValueError("command requires a non-empty JSON array of string arguments")
+        return PreparedExecution(command=argv, env=dict(node.env or {}),
+                                 cwd=str(paths.target_workdir), trace_kind="command",
+                                 runtime_files={}, stdin=None)

@@ -827,6 +827,46 @@ function renderRuns() {
   });
 }
 
+const expandedCandidates = new Set();
+function isPotentialNode(node, nodeMap) {
+  return Boolean(node?.activation) && (!nodeMap[node.id] || nodeMap[node.id].status === 'pending');
+}
+function projectCandidateNodes(nodes, nodeMap, pipeline) {
+  const groups = new Map();
+  const groupByMember = new Map();
+  Object.entries(pipeline?.fanouts || {}).forEach(([group, members]) => members.forEach(id => groupByMember.set(id, group)));
+  // Short feedback paths stay explicit; only candidate previews may be folded.
+  const shortLoopNodes = new Set();
+  for (const tail of nodes) {
+    for (const target of tail.on_failure_restart || []) {
+      if (tail.id === target) shortLoopNodes.add(target);
+      if (tail.depends_on?.includes(target)) { shortLoopNodes.add(target); shortLoopNodes.add(tail.id); }
+    }
+  }
+  for (const node of nodes) {
+    if (!isPotentialNode(node, nodeMap) || shortLoopNodes.has(node.id)) continue;
+    const group = groupByMember.get(node.id) || node.id;
+    const key = `${state.runId}:${node.activation.source}:${group}`;
+    if (expandedCandidates.has(key) || state.selectedNodeId === node.id) continue;
+    if (!groups.has(key)) groups.set(key, { group, members: [] });
+    groups.get(key).members.push(node);
+  }
+  const aliases = new Map();
+  const previews = [];
+  for (const [key, { group, members }] of groups) {
+    const id = `@candidate:${members[0].id}`;
+    members.forEach(node => aliases.set(node.id, id));
+    previews.push({ ...members[0], id, previewKey: key, previewMembers: members.map(node => node.id),
+      displayLabel: `… ${truncateGraphLabel(group, 8)} (${members.length})`,
+      depends_on: [...new Set(members.flatMap(node => node.depends_on || []))],
+      on_failure_restart: [...new Set(members.flatMap(node => node.on_failure_restart || []))] });
+  }
+  return [...nodes.filter(node => !aliases.has(node.id)), ...previews].map(node => ({ ...node,
+    depends_on: [...new Set((node.depends_on || []).map(id => aliases.get(id) || id))].filter(id => id !== node.id),
+    on_failure_restart: [...new Set((node.on_failure_restart || []).map(id => aliases.get(id) || id))],
+  }));
+}
+
 function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   const container = document.getElementById("graph");
   const existingTooltip = document.getElementById("graph-node-tooltip");
@@ -843,7 +883,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   const pipelineNodeList = Array.isArray(pipeline?.nodes) ? pipeline.nodes : [];
   const requestedNodeList = Array.isArray(pipelineNodes) ? pipelineNodes : pipelineNodeList;
   const seenNodeIds = new Set();
-  const nodes = [];
+  let nodes = [];
   const appendNode = (node) => {
     if (!node || typeof node.id !== "string" || !node.id || seenNodeIds.has(node.id)) return;
     seenNodeIds.add(node.id);
@@ -852,6 +892,8 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   pipelineNodeList.forEach(appendNode);
   if (requestedNodeList !== pipelineNodeList) requestedNodeList.forEach(appendNode);
   const nodeMap = nodeStatusMap || state.nodes;
+  nodes = projectCandidateNodes(nodes, nodeMap, pipeline);
+  const nodeById = Object.fromEntries(nodes.map(node => [node.id, node]));
   if (!nodes.length) {
     container.innerHTML = renderEmptyState("Choose an execution from run history to explore its dependencies and progress.", "Your workflow, at a glance");
     return;
@@ -984,6 +1026,13 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     let bounds;
     try {
       bounds = nodesLayer.getBBox();
+      if (edgesLayer.childNodes.length) {
+        const edges = edgesLayer.getBBox();
+        const x = Math.min(bounds.x, edges.x);
+        const y = Math.min(bounds.y, edges.y);
+        bounds = { x, y, width: Math.max(bounds.x + bounds.width, edges.x + edges.width) - x,
+          height: Math.max(bounds.y + bounds.height, edges.y + edges.height) - y };
+      }
     } catch (_error) {
       return fallbackViewBox;
     }
@@ -1049,6 +1098,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
 
   [
     ["Fit", () => fitGraphView()],
+    ["Compact", () => { expandedCandidates.clear(); renderGraph(); }],
     ["Zoom+", () => scaleGraphView(1.2)],
     ["Zoom-", () => scaleGraphView(0.8)],
     ["100%", () => resetGraphZoom()],
@@ -1152,6 +1202,13 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   function cyclePath(fromId, toId) {
     const from = nodeBounds(fromId);
     const to = nodeBounds(toId);
+    if (fromId === toId) {
+      const sx = from.x + from.width;
+      const sy = from.y + from.height / 2;
+      const ex = from.x + from.width / 2;
+      const ey = from.y - 5;
+      return `M ${sx} ${sy} C ${sx + 64} ${sy} ${sx + 64} ${ey - 64} ${ex} ${ey - 64} C ${ex} ${ey - 64} ${ex} ${ey - 24} ${ex} ${ey}`;
+    }
     const startX = from.x + from.width / 2;
     const endX = to.x + to.width / 2;
     const endY = to.y - 5;
@@ -1213,6 +1270,9 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
       edge.setAttribute("stroke-linecap", "round");
       edge.setAttribute("stroke-linejoin", "round");
       edge.setAttribute("marker-end", "url(#graph-arrow-fanin)");
+      const potential = isPotentialNode(node, nodeMap) || dependencies.some(id => isPotentialNode(nodeById[id], nodeMap));
+      edge.dataset.kind = potential ? 'potential' : 'dependency';
+      if (potential) edge.setAttribute('stroke-dasharray', '6,4');
       edgesLayer.appendChild(edge);
 
       const label = document.createElementNS(ns, "text");
@@ -1249,6 +1309,12 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
       edge.setAttribute("stroke-linecap", "round");
       edge.setAttribute("stroke-linejoin", "round");
       edge.setAttribute("marker-end", "url(#graph-arrow)");
+      const potential = isPotentialNode(node, nodeMap) || isPotentialNode(nodeById[dependency], nodeMap);
+      edge.dataset.kind = potential ? 'potential' : 'dependency';
+      if (potential) edge.setAttribute('stroke-dasharray', '6,4');
+      const edgeTitle = document.createElementNS(ns, 'title');
+      edgeTitle.textContent = potential ? 'Possible activation; not an executed dependency' : 'Dependency';
+      edge.appendChild(edgeTitle);
       edge.dataset.fromNode = dependency;
       edge.dataset.toNode = node.id;
       edgesLayer.appendChild(edge);
@@ -1275,7 +1341,10 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
       edge.setAttribute("fill", "none");
       edge.setAttribute("stroke", edgeColor);
       edge.setAttribute("stroke-width", "2");
-      edge.setAttribute("stroke-dasharray", "6,4");
+      edge.dataset.kind = "restart";
+      const restartTitle = document.createElementNS(ns, 'title');
+      restartTitle.textContent = 'Failure restart';
+      edge.appendChild(restartTitle);
       edge.setAttribute("stroke-linecap", "round");
       edge.setAttribute("stroke-linejoin", "round");
       edge.setAttribute("marker-end", "url(#graph-arrow-cycle)");
@@ -1325,6 +1394,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     const statusColor = graphStatusColor(status);
     const group = document.createElementNS(ns, "g");
     group.dataset.nodeId = node.id;
+    group.dataset.kind = node.previewKey ? 'candidate-preview' : ['python', 'shell', 'command', 'sync'].includes(node.agent) ? 'utility' : 'agent';
     group.style.cursor = "grab";
 
     const selection = document.createElementNS(ns, "rect");
@@ -1349,6 +1419,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     card.setAttribute("fill", nodeFill);
     card.setAttribute("stroke", statusColor);
     card.setAttribute("stroke-width", "2");
+    if (isPotentialNode(node, nodeMap)) card.setAttribute("stroke-dasharray", "6,4");
     group.appendChild(card);
 
     const statusDot = document.createElementNS(ns, "circle");
@@ -1366,7 +1437,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     title.setAttribute("font-weight", "600");
     title.setAttribute("dominant-baseline", "middle");
     title.setAttribute("font-family", "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace");
-    title.textContent = truncateGraphLabel(graphNodeShortName(node.id), 14);
+    title.textContent = node.displayLabel || truncateGraphLabel(graphNodeShortName(node.id), 14);
     group.appendChild(selection);
     group.appendChild(title);
 
@@ -1378,6 +1449,11 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
         suppressClick = false;
         return;
       }
+      if (node.previewKey) {
+        expandedCandidates.add(node.previewKey);
+        renderGraph();
+        return;
+      }
       state.selectedNodeId = node.id;
       applySelectionOpacity(state.selectedNodeId);
       renderDetail();
@@ -1387,8 +1463,8 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
       if (group.contains(event.relatedTarget)) return;
       graphTooltip.innerHTML = `
         <div class="graph-node-tooltip-label">Node ID</div>
-        <div class="graph-node-tooltip-value">${escapeHtml(node.id)}</div>
-        <div class="graph-node-tooltip-label">Agent</div>
+        <div class="graph-node-tooltip-value">${escapeHtml(node.previewMembers?.join(", ") || node.id)}</div>
+        <div class="graph-node-tooltip-label">Executor</div>
         <div class="graph-node-tooltip-value">${escapeHtml(node.agent || "-")}</div>
         <div class="graph-node-tooltip-label">Status</div>
         <div class="graph-node-tooltip-value">${escapeHtml(status)}</div>

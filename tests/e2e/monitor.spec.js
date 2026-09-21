@@ -196,3 +196,71 @@ for (const tab of ['Stdout', 'Stderr', 'Trace']) {
     expect(await page.locator('.log-viewport script').count()).toBe(0);
   });
 }
+
+test('possible branches use dashed previews while executed nodes remain explicit', async ({ page }) => {
+  await mock(page);
+  const run = fixture('branched', 'running', ['gate', 'worker_0', 'worker_1', 'worker_2', 'join']);
+  run.pipeline.fanouts = { worker: ['worker_0', 'worker_1', 'worker_2'] };
+  run.nodes.gate.status = 'running';
+  for (const node of run.pipeline.nodes.slice(1, 4)) {
+    node.activation = { source: 'gate', path: ['count'] };
+    run.nodes[node.id].status = 'pending';
+  }
+  run.pipeline.nodes[4].depends_on = run.pipeline.fanouts.worker;
+  run.nodes.join.status = 'pending';
+  await page.route('**/api/runs**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/runs') return route.fulfill({ json: [run] });
+    if (path === '/api/runs/branched') return route.fulfill({ json: run });
+    return route.fallback();
+  });
+  await page.reload();
+  const preview = page.locator('[data-kind="candidate-preview"]');
+  await expect(preview).toHaveCount(1);
+  await expect(preview).toContainText('… worker (3)');
+  await expect(page.locator('path[data-kind="potential"]').first()).toHaveAttribute('stroke-dasharray', '6,4');
+  await preview.click();
+  await expect(preview).toHaveCount(0);
+  await expect(page.locator('[data-node-id="worker_0"]')).toBeVisible();
+  await page.evaluate(() => applyEvent({ type: 'node_started', node_id: 'worker_0', data: {} }));
+  await page.getByRole('button', { name: 'Compact', exact: true }).click();
+  await expect(preview).toContainText('… worker (2)');
+  await expect(page.locator('[data-node-id="worker_0"]')).toBeVisible();
+  await expect(page.locator('path[data-to-node="worker_0"]')).not.toHaveAttribute('stroke-dasharray');
+});
+
+test('candidate previews keep short feedback paths explicit and fold length three', async ({ page }) => {
+  await mock(page);
+  const results = await page.evaluate(() => {
+    const gate = { id: 'gate', agent: 'python', depends_on: [] };
+    const child = { id: 'child', agent: 'python', depends_on: ['gate'], activation: { source: 'gate' }, on_failure_restart: ['gate'] };
+    const short = projectCandidateNodes([gate, child], {}, { nodes: [] });
+    const tail = { id: 'tail', depends_on: ['child'], on_failure_restart: ['gate'] };
+    const long = projectCandidateNodes([gate, { ...child, on_failure_restart: [] }, tail], {}, { nodes: [] });
+    return { short: short.filter(node => node.previewKey).length, long: long.filter(node => node.previewKey).length };
+  });
+  expect(results).toEqual({ short: 0, long: 1 });
+});
+
+
+test('self restart is a visible solid loop and Fit includes its path', async ({ page }) => {
+  await mock(page);
+  await expect(page.locator('[data-node-id="prepare"]')).toBeVisible();
+  await page.evaluate(() => {
+    state.pipeline = { name: 'self', nodes: [{ id: 'loop', agent: 'python', depends_on: [], on_failure_restart: ['loop'] }] };
+    state.nodes = { loop: { status: 'pending' } };
+    state.selectedNodeId = null;
+    renderGraph();
+  });
+  const loop = page.locator('path[data-kind="restart"]');
+  await expect(loop).not.toHaveAttribute('stroke-dasharray');
+  const geometry = await loop.evaluate(el => {
+    const bounds = el.getBBox();
+    const view = el.ownerSVGElement.viewBox.baseVal;
+    return { width: bounds.width, height: bounds.height, inside: bounds.x >= view.x && bounds.y >= view.y
+      && bounds.x + bounds.width <= view.x + view.width && bounds.y + bounds.height <= view.y + view.height };
+  });
+  expect(geometry.width).toBeGreaterThan(30);
+  expect(geometry.height).toBeGreaterThan(30);
+  expect(geometry.inside).toBe(true);
+});

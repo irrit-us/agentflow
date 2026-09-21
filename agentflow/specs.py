@@ -52,6 +52,7 @@ class AgentKind(StrEnum):
     TERMINUS = "terminus"
     PYTHON = "python"
     SHELL = "shell"
+    COMMAND = "command"
     SYNC = "sync"
 
 
@@ -1321,6 +1322,13 @@ class PeriodicScheduleSpec(BaseModel):
         return normalized
 
 
+class ActivationSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(min_length=1)
+    path: list[str] = Field(default_factory=list)
+
+
 class NodeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1344,6 +1352,9 @@ class NodeSpec(BaseModel):
     prompt: str
     depends_on: list[str] = Field(default_factory=list)
     depends_on_failure: list[str] = Field(default_factory=list)
+    activation: ActivationSpec | None = None
+    trigger_rule: Literal["all_success", "all_done"] = "all_success"
+    python_callable: str | None = None
     on_failure_restart: list[str] = Field(default_factory=list)
     model: str | None = None
     provider: str | ProviderConfig | None = None
@@ -1386,6 +1397,13 @@ class NodeSpec(BaseModel):
 
     @model_validator(mode="after")
     def ensure_unique_dependencies(self) -> "NodeSpec":
+        if self.activation is not None:
+            if self.activation.source == self.id:
+                raise ValueError("activation source cannot be the node itself")
+            self.depends_on.append(self.activation.source)
+        if self.python_callable is not None:
+            if self.agent != AgentKind.PYTHON or not re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", self.python_callable):
+                raise ValueError("python_callable requires a python node and module:function reference")
         self.depends_on = list(dict.fromkeys(self.depends_on))
         duplicate_mcp_names = sorted(name for name, count in Counter(mcp.name for mcp in self.mcps).items() if count > 1)
         if duplicate_mcp_names:
@@ -2175,7 +2193,7 @@ def _validate_well_formedness(pipeline: "PipelineSpec") -> None:
                 f"node {node.id!r} prompt references unknown feedback channels: {sorted(unknown_channels)}"
             )
         for dependency in dict.fromkeys(node.depends_on):
-            if dependency in node_refs:
+            if dependency in node_refs or (node.activation and dependency == node.activation.source):
                 continue
             if channels_by_anchor.get(dependency, set()) & feedback_refs:
                 continue
@@ -2284,6 +2302,21 @@ class PipelineSpec(BaseModel):
         }
         if missing:
             raise ValueError(f"unknown dependencies: {sorted(missing)}")
+        by_id = {node.id: node for node in self.nodes}
+        for node in self.nodes:
+            if node.activation is None:
+                continue
+            pending = [node.activation.source]
+            visited = set()
+            while pending:
+                source = pending.pop()
+                if source == node.id:
+                    raise ValueError(f"activation introduces a dependency cycle at {node.id!r}")
+                if source in visited:
+                    continue
+                visited.add(source)
+                pending.extend(by_id[source].depends_on)
+                pending.extend(by_id[source].depends_on_failure)
         fanout_missing = {
             member_id
             for members in self.fanouts.values()
