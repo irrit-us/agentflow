@@ -99,6 +99,8 @@ function topoLevels(nodes) {
 
 const graphViewState = {
   cleanup: null,
+  dragging: false,
+  pendingRefresh: false,
   layoutSignature: null,
   positions: {},
   viewBox: null,
@@ -133,15 +135,10 @@ function graphLayoutSignature(nodes) {
 }
 
 const GRAPH_STATUS_COLORS = {
-  pending: "#d0d7de",
-  queued: "#8250df",
-  ready: "#d0d7de",
-  running: "#d29922",
-  retrying: "#d29922",
-  completed: "#1a7f37",
-  failed: "#cf222e",
-  skipped: "#d0d7de",
-  cancelled: "#656d76",
+  pending: "var(--muted)", queued: "var(--queued)", ready: "var(--muted)",
+  running: "var(--warning)", retrying: "var(--warning)",
+  completed: "var(--success)", failed: "var(--danger)",
+  skipped: "var(--muted)", cancelled: "var(--muted)",
 };
 
 function graphStatusColor(status) {
@@ -337,8 +334,8 @@ function graphLayout(nodes) {
 
   const nodeWidth = 140;
   const nodeHeight = 54;
-  const nodeGap = 10;
-  const levelGap = 10;
+  const nodeGap = 24;
+  const levelGap = 64;
   const fanoutColumns = 8;
   const fanoutGroupLabelHeight = 10;
   const fanoutGroupLabelGap = 4;
@@ -793,10 +790,10 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   });
 
   const ns = "http://www.w3.org/2000/svg";
-  const edgeColor = "#656d76";
-  const selectedColor = "#0969da";
-  const nodeFill = "#ffffff";
-  const nodeText = "#1f2328";
+  const edgeColor = "var(--muted)";
+  const selectedColor = "var(--link)";
+  const nodeFill = "var(--panel-alt)";
+  const nodeText = "var(--text)";
   const highFaninThreshold = 8;
   const defaultViewBox = { x: 0, y: 0, width: layout.sceneWidth, height: layout.sceneHeight };
   const svg = document.createElementNS(ns, "svg");
@@ -818,14 +815,14 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   container.appendChild(controls);
 
   const defs = document.createElementNS(ns, "defs");
-  const createMarker = (id, color, markerUnits = "strokeWidth") => {
+  const createMarker = (id, color, markerUnits = "userSpaceOnUse") => {
     const marker = document.createElementNS(ns, "marker");
     marker.setAttribute("id", id);
     marker.setAttribute("viewBox", "0 0 10 10");
-    marker.setAttribute("refX", "8");
+    marker.setAttribute("refX", "9");
     marker.setAttribute("refY", "5");
-    marker.setAttribute("markerWidth", "7");
-    marker.setAttribute("markerHeight", "7");
+    marker.setAttribute("markerWidth", "10");
+    marker.setAttribute("markerHeight", "10");
     marker.setAttribute("markerUnits", markerUnits);
     marker.setAttribute("orient", "auto");
     const arrow = document.createElementNS(ns, "path");
@@ -1014,15 +1011,22 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     return `M ${startX} ${startY} Q ${controlX} ${controlY} ${endX} ${endY}`;
   }
 
+  // Choose facing ports after every drag; arrows always terminate at the dependent node.
   function forwardPath(fromId, toId) {
     const from = nodeBounds(fromId);
     const to = nodeBounds(toId);
-    return forwardCurve(
-      from.x + from.width,
-      from.y + from.height / 2,
-      to.x,
-      to.y + to.height / 2,
-    );
+    const dx = to.x + to.width / 2 - from.x - from.width / 2;
+    const dy = to.y + to.height / 2 - from.y - from.height / 2;
+    const horizontal = Math.abs(dx) >= (from.width + to.width) / 2 + 16 || Math.abs(dx) >= Math.abs(dy) * 1.4;
+    const direction = Math.sign(horizontal ? dx : dy) || 1;
+    const sx = from.x + from.width / 2 + (horizontal ? direction * from.width / 2 : 0);
+    const sy = from.y + from.height / 2 + (horizontal ? 0 : direction * from.height / 2);
+    const ex = to.x + to.width / 2 - (horizontal ? direction * (to.width / 2 + 5) : 0);
+    const ey = to.y + to.height / 2 - (horizontal ? 0 : direction * (to.height / 2 + 5));
+    const bend = Math.max(24, Math.abs(horizontal ? ex - sx : ey - sy) * 0.45);
+    const bx = horizontal ? direction * bend : 0;
+    const by = horizontal ? 0 : direction * bend;
+    return `M ${sx} ${sy} C ${sx + bx} ${sy + by} ${ex - bx} ${ey - by} ${ex} ${ey}`;
   }
 
   function highFaninAnchor(sourceIds) {
@@ -1047,7 +1051,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     const anchor = highFaninAnchor(sourceIds);
     if (!anchor) return "";
     const to = nodeBounds(toId);
-    return forwardCurve(anchor.x, anchor.y, to.x, to.y + to.height / 2);
+    return forwardCurve(anchor.x, anchor.y, to.x - 5, to.y + to.height / 2);
   }
 
   function highFaninLabelPosition(toId) {
@@ -1061,15 +1065,11 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
   function cyclePath(fromId, toId) {
     const from = nodeBounds(fromId);
     const to = nodeBounds(toId);
-    const startX = from.x;
-    const startY = from.y + from.height / 2;
-    const endX = to.x + to.width;
-    const endY = to.y + to.height / 2;
-    const horizontalLift = Math.max(96, Math.abs(startX - endX) * 0.35);
-    const verticalLift = Math.max(108, Math.abs(startY - endY) * 0.45 + 40);
-    const controlX = Math.min(startX, endX) - horizontalLift;
-    const controlY = Math.min(startY, endY) - verticalLift;
-    return `M ${startX} ${startY} Q ${controlX} ${controlY} ${endX} ${endY}`;
+    const startX = from.x + from.width / 2;
+    const endX = to.x + to.width / 2;
+    const endY = to.y - 5;
+    const liftY = Math.min(from.y, to.y) - Math.max(64, Math.abs(startX - endX) * 0.25);
+    return `M ${startX} ${from.y} C ${startX} ${liftY} ${endX} ${liftY} ${endX} ${endY}`;
   }
 
   function updateNodePosition(nodeId) {
@@ -1108,7 +1108,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     });
     edgeRefs.forEach((edge) => {
       const isDirectDependencyEdge = edge.kind === "dependency" && edge.toId === selectedNodeId;
-      const opacity = !hasSelection || isDirectDependencyEdge ? "1.0" : "0.55";
+      const opacity = !hasSelection || isDirectDependencyEdge ? "1.0" : "0.75";
       edge.path.style.opacity = opacity;
       if (edge.label) edge.label.style.opacity = opacity;
     });
@@ -1129,7 +1129,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
       edgesLayer.appendChild(edge);
 
       const label = document.createElementNS(ns, "text");
-      label.setAttribute("fill", "#656d76");
+      label.setAttribute("fill", "var(--muted)");
       label.setAttribute("font-size", "9");
       label.setAttribute("font-weight", "600");
       label.setAttribute("text-anchor", "middle");
@@ -1162,6 +1162,8 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
       edge.setAttribute("stroke-linecap", "round");
       edge.setAttribute("stroke-linejoin", "round");
       edge.setAttribute("marker-end", "url(#graph-arrow)");
+      edge.dataset.fromNode = dependency;
+      edge.dataset.toNode = node.id;
       edgesLayer.appendChild(edge);
       edgeRefs.push({
         fromId: dependency,
@@ -1219,7 +1221,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     const label = document.createElementNS(ns, "text");
     label.setAttribute("x", String(decoration.x));
     label.setAttribute("y", String(decoration.labelY));
-    label.setAttribute("fill", "#656d76");
+    label.setAttribute("fill", "var(--muted)");
     label.setAttribute("font-size", "8");
     label.setAttribute("font-weight", "600");
     label.setAttribute("font-family", "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace");
@@ -1330,57 +1332,63 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
 
   applySelectionOpacity(state.selectedNodeId);
 
-  function stopDragging() {
-    if (!dragState) return;
-    svg.style.cursor = "default";
-    if (nodeRefs[dragState.nodeId]) nodeRefs[dragState.nodeId].style.cursor = "grab";
-    suppressClick = dragState.moved;
-    if (dragState.moved) {
-      window.setTimeout(() => {
-        suppressClick = false;
-      }, 0);
-    }
+  function stopDragging(event) {
+    if (!dragState || (event && event.pointerId !== dragState.pointerId)) return;
+    const { nodeId, pointerId, moved } = dragState;
     dragState = null;
+    graphViewState.dragging = false;
+    if (graphViewState.pendingRefresh) {
+      graphViewState.pendingRefresh = false;
+      if (event) window.setTimeout(() => renderGraph(), 0);
+    }
+    svg.style.cursor = "grab";
+    if (nodeRefs[nodeId]) nodeRefs[nodeId].style.cursor = "grab";
+    if (svg.hasPointerCapture(pointerId)) svg.releasePointerCapture(pointerId);
+    suppressClick = moved;
+    if (moved) window.setTimeout(() => { suppressClick = false; }, 0);
   }
 
-  function handleMouseDown(event) {
-    if (event.button !== 0) return;
+  function handlePointerDown(event) {
+    if (event.button !== 0 || !event.isPrimary || dragState) return;
     const nodeGroup = findNodeGroup(event.target);
-    if (!nodeGroup) return;
-    const nodeId = nodeGroup.dataset.nodeId;
-    if (!graphViewState.positions[nodeId]) return;
+    const nodeId = nodeGroup?.dataset.nodeId;
     const point = scenePoint(event);
+    graphViewState.dragging = true;
     dragState = {
-      nodeId,
-      startX: point.x,
-      startY: point.y,
-      originX: graphViewState.positions[nodeId].x,
-      originY: graphViewState.positions[nodeId].y,
+      nodeId, pointerId: event.pointerId,
+      startX: point.x, startY: point.y,
+      clientX: event.clientX, clientY: event.clientY,
+      origin: { ...(nodeId ? graphViewState.positions[nodeId] : currentViewBox()) },
       moved: false,
     };
-    svg.style.cursor = "grabbing";
-    nodeGroup.style.cursor = "grabbing";
     event.preventDefault();
   }
 
-  function handleMouseMove(event) {
-    if (!dragState) return;
+  function handlePointerMove(event) {
+    if (!dragState || event.pointerId !== dragState.pointerId) return;
+    const moved = Math.hypot(event.clientX - dragState.clientX, event.clientY - dragState.clientY) > 4;
+    if (!dragState.moved && !moved) return;
+    if (!dragState.moved) {
+      svg.setPointerCapture(event.pointerId);
+      if (dragState.nodeId) nodesLayer.appendChild(nodeRefs[dragState.nodeId]);
+      graphTooltip.classList.remove("is-visible");
+    }
+    dragState.moved = true;
+    svg.style.cursor = "grabbing";
     const point = scenePoint(event);
     const dx = point.x - dragState.startX;
     const dy = point.y - dragState.startY;
-    const moved = Math.abs(dx) > 2 || Math.abs(dy) > 2;
-    if (moved && !dragState.moved) nodesLayer.appendChild(nodeRefs[dragState.nodeId]);
-    dragState.moved ||= moved;
-    graphViewState.positions[dragState.nodeId] = {
-      x: Math.max(24, Math.min(layout.sceneWidth - layout.nodeWidth - 24, dragState.originX + dx)),
-      y: Math.max(24, Math.min(layout.sceneHeight - layout.nodeHeight - 24, dragState.originY + dy)),
-    };
-    updateNodePosition(dragState.nodeId);
-    updateEdges(dragState.nodeId);
-  }
-
-  function handleMouseUp() {
-    stopDragging();
+    if (dragState.nodeId) {
+      nodeRefs[dragState.nodeId].style.cursor = "grabbing";
+      graphViewState.positions[dragState.nodeId] = {
+        x: dragState.origin.x + dx, y: dragState.origin.y + dy,
+      };
+      updateNodePosition(dragState.nodeId);
+      updateEdges(dragState.nodeId);
+    } else {
+      const view = currentViewBox();
+      setSvgViewBox({ ...view, x: view.x - dx, y: view.y - dy });
+    }
   }
 
   function handleWheel(event) {
@@ -1398,17 +1406,23 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     applySelectionOpacity();
     renderDetail();
   });
-  svg.addEventListener("mousedown", handleMouseDown);
+  svg.style.cursor = "grab";
+  svg.addEventListener("pointerdown", handlePointerDown);
   svg.addEventListener("wheel", handleWheel, { passive: false });
-  window.addEventListener("mousemove", handleMouseMove);
-  window.addEventListener("mouseup", handleMouseUp);
+  window.addEventListener("pointermove", handlePointerMove);
+  window.addEventListener("pointerup", stopDragging);
+  window.addEventListener("pointercancel", stopDragging);
+  svg.addEventListener("lostpointercapture", stopDragging);
 
   graphViewState.cleanup = () => {
     graphTooltip.classList.remove("is-visible");
-    svg.removeEventListener("mousedown", handleMouseDown);
+    stopDragging();
+    svg.removeEventListener("pointerdown", handlePointerDown);
     svg.removeEventListener("wheel", handleWheel);
-    window.removeEventListener("mousemove", handleMouseMove);
-    window.removeEventListener("mouseup", handleMouseUp);
+    window.removeEventListener("pointermove", handlePointerMove);
+    window.removeEventListener("pointerup", stopDragging);
+    window.removeEventListener("pointercancel", stopDragging);
+    svg.removeEventListener("lostpointercapture", stopDragging);
   };
 }
 
@@ -2145,7 +2159,7 @@ async function renderDetail() {
   const detailDuration = formatGraphNodeTooltipDuration(selected) || "-";
   const detailStatusColor = graphStatusColor(normalizedStatus);
   const detailSummary = `
-    <div style="display:flex;align-items:center;gap:0.35rem;margin:0 0 0.9rem;overflow-x:auto;color:#656d76;font-size:0.84rem;line-height:1.4;white-space:nowrap;">
+    <div style="display:flex;align-items:center;gap:0.35rem;margin:0 0 0.9rem;overflow-x:auto;color:var(--muted);font-size:0.84rem;line-height:1.4;white-space:nowrap;">
       <span style="color:${detailStatusColor};font-weight:700;">${escapeHtml(detailStatus)}</span>
       <span aria-hidden="true">·</span>
       <span>exit ${escapeHtml(String(detailExitCode))}</span>
@@ -2277,9 +2291,9 @@ async function renderDetail() {
 
         return `
           <div style="padding:8px 0;" data-trace-key="${escapeHtml(traceKey)}">
-            <pre style="margin:0;padding:8px 12px;background:#f6f8fa;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;overflow-x:auto;"><span style="color:#656d76;">$ </span>${renderHighlightedCommand(command, filename)}</pre>
+            <pre style="margin:0;padding:8px 12px;background:#f6f8fa;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;overflow-x:auto;"><span style="color:var(--muted);">$ </span>${renderHighlightedCommand(command, filename)}</pre>
             ${exitCode !== null && exitCode !== undefined ? `<span style="font-size:11px;color:${Number(exitCode) === 0 ? '#1a7f37' : '#cf222e'};">exit ${exitCode}</span>` : ""}
-            ${output ? `<details><summary style="font-size:11px;color:#656d76;cursor:pointer;">output</summary><pre style="margin:4px 0 0;padding:8px 12px;background:#f6f8fa;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:200px;overflow-y:auto;">${escapeHtml(String(output))}</pre></details>` : ""}
+            ${output ? `<details><summary style="font-size:11px;color:var(--muted);cursor:pointer;">output</summary><pre style="margin:4px 0 0;padding:8px 12px;background:#f6f8fa;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:200px;overflow-y:auto;">${escapeHtml(String(output))}</pre></details>` : ""}
           </div>
         `;
       }
@@ -2492,7 +2506,8 @@ function applyEvent(event) {
   }
   renderRunMeta();
   renderRuns();
-  renderGraph();
+  if (graphViewState.dragging) graphViewState.pendingRefresh = true;
+  else renderGraph();
   renderDetail();
 }
 
@@ -2919,3 +2934,19 @@ document.getElementById("detail").addEventListener("keydown", async (event) => {
   await renderDetail();
   document.querySelector(`[data-detail-tab="${state.detailTab}"]`)?.focus();
 });
+
+
+const themeSelect = document.getElementById("theme-select");
+const systemTheme = matchMedia("(prefers-color-scheme: dark)");
+try { themeSelect.value = localStorage.getItem("agentflow-theme") || "system"; } catch (_) {}
+if (!themeSelect.value) themeSelect.value = "system";
+function applyTheme() {
+  document.documentElement.dataset.theme = themeSelect.value === "system"
+    ? (systemTheme.matches ? "dark" : "light") : themeSelect.value;
+}
+themeSelect.addEventListener("change", () => {
+  try { localStorage.setItem("agentflow-theme", themeSelect.value); } catch (_) {}
+  applyTheme();
+});
+systemTheme.addEventListener("change", applyTheme);
+applyTheme();

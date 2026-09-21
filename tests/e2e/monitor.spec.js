@@ -87,3 +87,72 @@ test('empty history and API failure remain understandable', async ({ page }) => 
   await mock(page, { fail: true });
   await expect(page.locator('#banner')).toContainText('Monitor unavailable');
 });
+
+test('theme follows the system and remembers an explicit choice', async ({ page }) => {
+  await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+  await mock(page);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.locator('#refresh-runs')).toHaveCSS('background-color', 'rgb(24, 34, 49)');
+  await expect(page.getByRole('tabpanel').locator('pre')).toHaveCSS('background-color', 'rgb(16, 25, 37)');
+  await page.selectOption('#theme-select', 'light');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.selectOption('#theme-select', 'system');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+});
+
+test('dragging reverses arrow ports, pans the canvas and survives refresh', async ({ page }) => {
+  await mock(page);
+  const node = page.locator('[data-node-id="execute"]');
+  await expect(node).toBeVisible();
+  const edge = page.locator('[data-from-node="prepare"][data-to-node="execute"]');
+  const original = await edge.getAttribute('d');
+  const box = await node.boundingBox();
+  const source = await page.locator('[data-node-id="prepare"]').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(source.x - box.width, source.y + source.height / 2, { steps: 12 });
+  await node.evaluate(el => { window.draggedNode = el; });
+  await page.evaluate(() => applyEvent({ type: 'node_started', node_id: 'execute', data: {} }));
+  expect(await node.evaluate(el => el === window.draggedNode)).toBe(true);
+  await page.mouse.up();
+  await expect(edge).not.toHaveAttribute('d', original);
+  const direction = await edge.evaluate(el => {
+    const length = el.getTotalLength();
+    return el.getPointAtLength(length).x - el.getPointAtLength(length - 1).x;
+  });
+  expect(direction).toBeLessThan(0);
+  const position = await node.getAttribute('transform');
+  await page.locator('#refresh-runs').click();
+  await expect(node).toHaveAttribute('transform', position);
+  const svg = page.locator('#graph > svg');
+  const view = await svg.getAttribute('viewBox');
+  const canvas = await svg.boundingBox();
+  await page.mouse.move(canvas.x + 20, canvas.y + 90);
+  await page.mouse.down();
+  await page.mouse.move(canvas.x + 65, canvas.y + 120, { steps: 8 });
+  await page.mouse.up();
+  await expect(svg).not.toHaveAttribute('viewBox', view);
+  await page.getByRole('button', { name: 'Fit', exact: true }).click();
+  await expect(node).toBeVisible();
+});
+
+test('touch dragging moves a node without scrolling the page', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  await mock(page);
+  const node = page.locator('[data-node-id="prepare"]');
+  await node.scrollIntoViewIfNeeded();
+  const box = await node.boundingBox();
+  const before = await node.getAttribute('transform');
+  const scroll = await page.evaluate(() => scrollY);
+  const cdp = await page.context().newCDPSession(page);
+  const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [point] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: point.x, y: point.y + 45 }] });
+  await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect(node).not.toHaveAttribute('transform', before);
+  expect(await page.evaluate(() => scrollY)).toBe(scroll);
+  await cdp.detach();
+});
