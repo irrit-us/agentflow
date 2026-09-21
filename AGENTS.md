@@ -56,7 +56,8 @@ do not chase them, and do not let them block lite work.
    are collapsed into a single node whose inner iteration is carried by `max_iterations`,
    with the loop noted in the node prompt.
 9. **Git discipline.** Commit messages: English, imperative mood, matching repo history.
-   Never commit or push unless the user explicitly asks.
+   Never commit or push unless the user explicitly asks. Use `master` as this
+   fork's working and integration branch; do not create a `main` integration branch.
 10. **Monitor stays read-only.** The lite HTTP server exposes GET/HEAD only, enforced by
     middleware (405 for anything else); it is a monitor, not a control plane — do not add
     mutating endpoints.

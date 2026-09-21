@@ -14,9 +14,9 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Annotated, Any, Callable
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agentflow.agents.registry import AdapterRegistry, default_adapter_registry
 from agentflow.context import render_node_prompt
@@ -75,12 +75,15 @@ _TERMINAL_NODE_STATUSES = {
 
 
 class _PeriodicAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    command_ids: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(default_factory=list, max_length=100)
     kind: str
     node_ids: list[str] = Field(default_factory=list)
     reason: str | None = None
 
 
 class _PeriodicActionEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     analysis: str | None = None
     actions: list[_PeriodicAction] = Field(default_factory=list)
 
@@ -1012,56 +1015,74 @@ class Orchestrator:
             return
 
         record = self.store.get_run(run_id)
-        allowed_node_ids = set(record.pipeline.fanouts.get(watched_group, []))
-
-        ordered_actions = sorted(actions.actions, key=lambda item: 0 if item.kind == "cancel" else 1)
+        controller = record.nodes[controller_node_id]
+        schedule = record.pipeline.node_map[controller_node_id].schedule
+        # Authority comes from the submitted graph, never a controller's output.
+        allowed_node_ids = set(record.pipeline.fanouts.get(
+            schedule.until_fanout_settles_from if schedule else "", []))
+        allowed_kinds = set(schedule.allowed_actions) if schedule and schedule.actuation == PeriodicActuationMode.OUTPUT_JSON else set()
         applied: list[dict[str, Any]] = []
         rejected: list[dict[str, Any]] = []
-
-        for action in ordered_actions:
+        for action in sorted(actions.actions, key=lambda item: 0 if item.kind == "cancel" else 1):
             kind = action.kind.strip().lower()
-            if kind not in {"cancel", "rerun"}:
-                rejected.append({"kind": action.kind, "node_ids": list(action.node_ids), "reason": "unsupported_action"})
-                continue
-            for target_node_id in action.node_ids:
-                if target_node_id not in allowed_node_ids:
-                    rejected.append({"kind": kind, "node_id": target_node_id, "reason": "outside_watched_fanout"})
-                    continue
-                target_result = record.nodes[target_node_id]
-                if kind == "cancel":
-                    if target_result.status not in {NodeStatus.QUEUED, NodeStatus.RUNNING, NodeStatus.RETRYING}:
-                        rejected.append({"kind": kind, "node_id": target_node_id, "reason": "node_not_running"})
+            for target_node_id in dict.fromkeys(action.node_ids):
+                command_ids = list(dict.fromkeys(action.command_ids))
+                previous = [row for row in controller.control_receipts
+                            if row["kind"] == kind and row["node_id"] == target_node_id
+                            and set(row["command_ids"]) & set(command_ids)]
+                if previous:
+                    # Process fresh IDs in a mixed batch, but never replay old IDs.
+                    seen = {identifier for row in previous for identifier in row["command_ids"]}
+                    command_ids = [identifier for identifier in command_ids if identifier not in seen]
+                    if not command_ids:
                         continue
-                    self._node_cancel_flags.setdefault(run_id, set()).add(target_node_id)
-                    applied.append({"kind": kind, "node_id": target_node_id, "reason": action.reason})
-                    continue
+                reason = None
+                effect = None
+                if kind not in allowed_kinds:
+                    reason = "action_not_authorized"
+                elif target_node_id not in allowed_node_ids:
+                    reason = "outside_watched_fanout"
+                else:
+                    target = record.nodes[target_node_id]
+                    if kind == "cancel":
+                        if target.status not in {NodeStatus.QUEUED, NodeStatus.RUNNING, NodeStatus.RETRYING}:
+                            reason = "node_not_running"
+                        else:
+                            self._node_cancel_flags.setdefault(run_id, set()).add(target_node_id)
+                            effect = "cancel_requested"
+                    elif target.status in {NodeStatus.PENDING, NodeStatus.READY}:
+                        reason = "node_not_started"
+                    elif schedule.max_reruns_per_member is not None and target.control_rerun_count >= schedule.max_reruns_per_member:
+                        reason = "rerun_budget_exhausted"
+                    elif target_node_id in self._pending_node_reruns.get(run_id, set()):
+                        reason = "rerun_already_pending"
+                    else:
+                        target.control_rerun_count += 1
+                        self._pending_node_reruns.setdefault(run_id, set()).add(target_node_id)
+                        if target.status in _TERMINAL_NODE_STATUSES and target_node_id not in in_progress:
+                            target.status = NodeStatus.PENDING
+                            target.next_scheduled_at = None
+                            remaining.add(target_node_id)
+                        effect = "rerun_queued"
+                receipt = {"run_id": run_id, "controller_node_id": controller_node_id,
+                           "tick_number": controller.tick_count, "command_ids": command_ids,
+                           "kind": kind, "node_id": target_node_id,
+                           "status": "rejected" if reason else "scheduler_applied",
+                           "effect": effect, "reason": reason or action.reason,
+                           "recorded_at": utcnow_iso()}
+                controller.control_receipts.append(receipt)
+                (rejected if reason else applied).append(receipt)
 
-                if target_result.status in {NodeStatus.PENDING, NodeStatus.READY}:
-                    rejected.append({"kind": kind, "node_id": target_node_id, "reason": "node_not_started"})
-                    continue
-                self._pending_node_reruns.setdefault(run_id, set()).add(target_node_id)
-                if target_result.status in _TERMINAL_NODE_STATUSES and target_node_id not in in_progress:
-                    target_result.status = NodeStatus.PENDING
-                    target_result.next_scheduled_at = None
-                    remaining.add(target_node_id)
-                applied.append({"kind": kind, "node_id": target_node_id, "reason": action.reason})
-
-        if applied:
-            await self._publish(
-                run_id,
-                "node_control_actions_applied",
-                node_id=controller_node_id,
-                watched_group=watched_group,
-                actions=applied,
-            )
-        if rejected:
-            await self._publish(
-                run_id,
-                "node_control_actions_rejected",
-                node_id=controller_node_id,
-                watched_group=watched_group,
-                actions=rejected,
-            )
+        # Publish receipts only after the state and budget charge are persisted.
+        # This acknowledges scheduler state, not process termination or task success.
+        await self.store.persist_run(run_id)
+        await self.store.write_artifact_json(run_id, controller_node_id, "control-results.json",
+                                             {"run_id": run_id, "receipts": controller.control_receipts})
+        for event, rows in (("node_control_actions_applied", applied), ("node_control_actions_rejected", rejected)):
+            if rows:
+                await self._publish(run_id, event, node_id=controller_node_id,
+                                    watched_group=schedule.until_fanout_settles_from if schedule else watched_group,
+                                    actions=rows)
 
     async def _execute_node(
         self,

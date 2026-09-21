@@ -1309,6 +1309,8 @@ class PeriodicScheduleSpec(BaseModel):
     every_seconds: int = Field(ge=1)
     until_fanout_settles_from: str
     actuation: PeriodicActuationMode = PeriodicActuationMode.NONE
+    allowed_actions: list[Literal["cancel", "rerun"]] = Field(default_factory=lambda: ["cancel", "rerun"])
+    max_reruns_per_member: int | None = Field(default=None, ge=0, strict=True)
 
     @field_validator("until_fanout_settles_from")
     @classmethod
@@ -2394,6 +2396,8 @@ class NodeResult(BaseModel):
     error_traceback: str | None = None
     current_attempt: int = 0
     attempts: list[NodeAttempt] = Field(default_factory=list)
+    control_rerun_count: int = Field(default=0, ge=0)
+    control_receipts: list[dict[str, Any]] = Field(default_factory=list)
     tick_count: int = 0
     last_tick_started_at: str | None = None
     next_scheduled_at: str | None = None
