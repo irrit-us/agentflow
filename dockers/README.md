@@ -1,8 +1,17 @@
 # AgentFlow container images
 
-Ready-made images for running AgentFlow nodes inside containers. All images build on
+Ready-made images for running AgentFlow nodes inside containers. The per-agent
+recipes in this directory build on
 `dockers/base.Dockerfile` (`debian:bookworm-slim` plus `curl`, `git`, `wget`, and
 Python 3, with `python` symlinked to the same interpreter as `python3`).
+
+## Other container assets
+
+- [`entrypoint.sh`](entrypoint.sh) is used by the bundled runtime image in the
+  repository-root [`Dockerfile`](../Dockerfile). Build that image with the
+  repository root as its context.
+- [`agent/`](agent/README.md) contains the generic wheel-based agent image recipe
+  and its build-context instructions.
 
 ## Build
 

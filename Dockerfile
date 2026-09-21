@@ -77,7 +77,7 @@ RUN uv pip install \
     && command -v su-exec \
     && test -r /usr/lib/libnss_wrapper.so
 
-COPY --chmod=0755 docker/entrypoint.sh /usr/local/bin/agentflow-entrypoint
+COPY --chmod=0755 dockers/entrypoint.sh /usr/local/bin/agentflow-entrypoint
 
 WORKDIR /workspace
 
