@@ -2,254 +2,121 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 
 import pytest
 from fastapi.testclient import TestClient
 
 from agentflow.app import create_app
-from agentflow.orchestrator import Orchestrator
-from agentflow.specs import RunRecord
+from agentflow.specs import AgentKind, RunRecord, RunEvent
 from agentflow.store import RunStore
-from tests.test_orchestrator import make_orchestrator
+from agentflow.traces import create_trace_parser
 
 
-def test_api_starts_and_returns_run_details(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
+@pytest.fixture
+def monitor(tmp_path):
+    store = RunStore(tmp_path / "runs")
+    asyncio.run(store.create_run(RunRecord(id="run", status="completed", pipeline={
+        "name": "fixture", "nodes": [{"id": "alpha", "agent": "shell", "prompt": "fixture"}]})))
+    return store, TestClient(create_app(store=store))
 
-    payload = {
-        "pipeline": {
-            "name": "api-run",
-            "working_dir": str(tmp_path),
-            "nodes": [
-                {"id": "alpha", "agent": "codex", "prompt": "api success"},
-            ],
-        }
+
+@pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+@pytest.mark.parametrize("path", ["/api/runs", "/api/runs/validate", "/api/runs/run/cancel", "/api/runs/run/rerun", "/"])
+def test_monitor_rejects_all_mutations(monitor, method, path):
+    store, client = monitor
+    before = {str(p): p.read_bytes() for p in store.base_dir.rglob("*") if p.is_file()}
+    response = client.request(method, path, json={"pipeline_path": "anything.py"})
+    assert response.status_code == 405
+    assert response.headers["allow"] == "GET, HEAD"
+    assert before == {str(p): p.read_bytes() for p in store.base_dir.rglob("*") if p.is_file()}
+    assert len(store.list_runs()) == 1
+
+
+def test_monitor_reads_runs_events_and_artifacts(monitor):
+    store, client = monitor
+    asyncio.run(store.write_artifact_text("run", "alpha", "output.txt", "answer"))
+    asyncio.run(store.append_event("run", RunEvent(run_id="run", type="run_completed", data={"status": "completed"})))
+    assert client.get("/").status_code == 200
+    assert client.get("/api/runs").json()[0]["id"] == "run"
+    assert client.get("/api/runs/run").json()["status"] == "completed"
+    assert client.get("/api/runs/run/artifacts/alpha/output.txt").text == "answer"
+    assert len(client.get("/api/runs/run/events").json()) == 1
+    assert "run_completed" in client.get("/api/runs/run/stream").text
+    assert client.get("/api/health").json()["ok"]
+    schema = client.get("/openapi.json").json()
+    assert all("post" not in methods for methods in schema["paths"].values())
+
+
+def test_log_windows_preserve_unicode_blanks_and_cursors_during_append(monitor):
+    store, client = monitor
+    lines = [f"line {i} 中文 🐈" if i % 9 else "" for i in range(123)]
+    asyncio.run(store.write_artifact_text("run", "alpha", "stdout.log", "\n".join(lines) + "\n"))
+    url = "/api/runs/run/artifacts/alpha/stdout.log/tail"
+    page = client.get(url).json()
+    assert page["lines"] == lines[-50:]
+    asyncio.run(store.append_artifact_text("run", "alpha", "stdout.log", "new output\n"))
+    result = page["lines"]
+    while page["has_more"]:
+        page = client.get(url, params={"before": page["before"]}).json()
+        result = page["lines"] + result
+    assert result == lines
+    assert client.get(url).json()["lines"][-1] == "new output"
+    assert client.get(url, params={"limit": 201}).status_code == 422
+    assert client.get(url, params={"before": -1}).status_code == 422
+    asyncio.run(store.write_artifact_text("run", "alpha", "stdout.log", "short"))
+    assert client.get(url).json()["lines"] == ["short"]
+
+
+def test_artifact_reads_do_not_create_directories_or_escape_store(monitor, tmp_path):
+    store, client = monitor
+    assert client.get("/api/runs/missing/artifacts/absent/stdout.log/tail").status_code == 404
+    assert client.get("/api/runs/missing/artifacts/absent/stdout.log").status_code == 404
+    assert not (store.base_dir / "missing").exists()
+    assert client.get("/api/runs/run/artifacts/%2E%2E/run.json").status_code == 400
+    outside = tmp_path / "secret"
+    outside.write_text("secret")
+    store.artifact_path("run", "alpha", "stdout.log").symlink_to(outside)
+    assert client.get("/api/runs/run/artifacts/alpha/stdout.log/tail").status_code == 400
+
+
+@pytest.mark.parametrize("agent", [*AgentKind, "custom-agent"])
+def test_all_agent_outputs_reach_monitor_artifacts(monitor, agent):
+    store, client = monitor
+    answer = "answer 中文 <script>safe</script>"
+    payloads = {
+        "codex": {"type": "response.output_item.done", "item": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": answer}]}},
+        "claude": {"type": "result", "result": answer},
+        "kimi": {"jsonrpc": "2.0", "method": "event", "params": {"type": "ContentPart", "payload": {"type": "text", "text": answer}}},
+        "pi": {"type": "agent_end", "messages": [{"role": "assistant", "content": [{"type": "text", "text": answer}]}]},
+        "opencode": {"type": "message.part.updated", "part": {"type": "text", "text": answer, "state": "completed"}},
+        "goose": {"type": "message", "message": {"role": "assistant", "content": [{"type": "text", "text": answer}]}},
+        "deepseek": {"type": "final", "text": answer},
+        "zcode": {"response": answer},
     }
-    response = client.post("/api/runs", json=payload)
-    assert response.status_code == 200
-    run_id = response.json()["id"]
-    asyncio.run(orchestrator.wait(run_id, timeout=5))
-    run_response = client.get(f"/api/runs/{run_id}")
-    assert run_response.status_code == 200
-    body = run_response.json()
-    assert body["status"] == "completed"
-    assert body["nodes"]["alpha"]["output"] == "api success"
-
-
-def test_api_returns_default_example_payload(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    response = client.get("/api/examples/default")
-    assert response.status_code == 200
-    payload = json.loads(response.json()["example"])
-    assert payload["name"] == "airflow-like-example"
-    assert payload["working_dir"] == "."
-    assert response.json()["base_dir"] == os.getcwd()
-
-
-def test_api_supports_validation_and_artifacts(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    validate = client.post(
-        "/api/runs/validate",
-        json={"pipeline_text": json.dumps({"name": "ok", "working_dir": ".", "nodes": [{"id": "alpha", "agent": "codex", "prompt": "hi"}]})},
-    )
-    assert validate.status_code == 200
-    assert validate.json()["pipeline"]["name"] == "ok"
-
-    invalid = client.post(
-        "/api/runs/validate",
-        json={"pipeline_text": json.dumps({"name": "bad", "nodes": [{"id": "a", "agent": "codex", "prompt": "hi", "depends_on": ["b"]}]})},
-    )
-    assert invalid.status_code == 422
-
-    create = client.post(
-        "/api/runs",
-        json={"pipeline": {"name": "artifact", "working_dir": str(tmp_path), "nodes": [{"id": "alpha", "agent": "codex", "prompt": "artifact output"}]}}
-    )
-    run_id = create.json()["id"]
-    asyncio.run(orchestrator.wait(run_id, timeout=5))
-    artifact = client.get(f"/api/runs/{run_id}/artifacts/alpha/output.txt")
-    assert artifact.status_code == 200
-    assert artifact.text == "artifact output"
-    launch = client.get(f"/api/runs/{run_id}/artifacts/alpha/launch.json")
-    assert launch.status_code == 200
-    assert launch.json()["kind"] == "process"
-    assert launch.json()["command"][0] == "python3"
-
-
-def test_api_validate_resolves_inline_pipeline_text_relative_to_explicit_base_dir(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    workspace = tmp_path / "workspace"
-    response = client.post(
-        "/api/runs/validate",
-        json={
-            "pipeline_text": json.dumps({
-                "name": "inline-json",
-                "working_dir": ".",
-                "nodes": [{"id": "alpha", "agent": "codex", "prompt": "hi", "target": {"kind": "local", "cwd": "task"}}],
-            }),
-            "base_dir": str(workspace),
-        },
-    )
-
-    assert response.status_code == 200
-    payload = response.json()["pipeline"]
-    assert payload["working_dir"] == str(workspace.resolve())
-    assert payload["nodes"][0]["target"]["cwd"] == str((workspace / "task").resolve())
-
-
-def test_api_run_resolves_inline_pipeline_relative_to_explicit_base_dir(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    workspace = tmp_path / "workspace"
-    (workspace / "task").mkdir(parents=True)
-    response = client.post(
-        "/api/runs",
-        json={
-            "base_dir": str(workspace),
-            "pipeline": {
-                "name": "inline-json",
-                "working_dir": ".",
-                "nodes": [
-                    {
-                        "id": "alpha",
-                        "agent": "codex",
-                        "prompt": "hi",
-                        "target": {
-                            "kind": "local",
-                            "cwd": "task",
-                        },
-                    }
-                ],
-            },
-        },
-    )
-
-    assert response.status_code == 200
-    body = response.json()
-    payload = body["pipeline"]
-    assert payload["working_dir"] == str(workspace.resolve())
-    assert payload["nodes"][0]["target"]["cwd"] == str((workspace / "task").resolve())
-    asyncio.run(orchestrator.wait(body["id"], timeout=5))
-
-
-def test_api_validate_rejects_pipeline_path_payload_by_default(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    pipeline_dir = tmp_path / "pipelines"
-    pipeline_dir.mkdir()
-    pipeline_path = pipeline_dir / "api.json"
-    pipeline_path.write_text(
-        json.dumps({"name": "pipeline-path", "working_dir": ".", "nodes": [{"id": "alpha", "agent": "codex", "prompt": "hi", "target": {"kind": "local", "cwd": "task"}}]}),
-        encoding="utf-8",
-    )
-
-    response = client.post("/api/runs/validate", json={"pipeline_path": str(pipeline_path)})
-
-    assert response.status_code == 403
-    assert response.json()["detail"] == "pipeline_path is disabled for the web API by default"
-
-
-def test_api_validate_supports_pipeline_path_payload_when_explicitly_enabled(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENTFLOW_API_ALLOW_PIPELINE_PATH", "1")
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    pipeline_dir = tmp_path / "pipelines"
-    pipeline_dir.mkdir()
-    pipeline_path = pipeline_dir / "api.json"
-    pipeline_path.write_text(
-        json.dumps({"name": "pipeline-path", "working_dir": ".", "nodes": [{"id": "alpha", "agent": "codex", "prompt": "hi", "target": {"kind": "local", "cwd": "task"}}]}),
-        encoding="utf-8",
-    )
-
-    response = client.post("/api/runs/validate", json={"pipeline_path": str(pipeline_path)})
-
-    assert response.status_code == 200
-    payload = response.json()["pipeline"]
-    assert payload["working_dir"] == str(pipeline_dir.resolve())
-    assert payload["nodes"][0]["target"]["cwd"] == str((pipeline_dir / "task").resolve())
-
-
-
-def test_api_rejects_inline_executable_agents_by_default(tmp_path, monkeypatch):
-    monkeypatch.delenv("AGENTFLOW_API_ALLOW_EXECUTABLE_AGENTS", raising=False)
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-    payload = {
-        "pipeline": {
-            "name": "shell-rce",
-            "working_dir": str(tmp_path),
-            "nodes": [{"id": "shell", "agent": "shell", "prompt": "echo unsafe"}],
-        }
-    }
-
-    for endpoint in ("/api/runs/validate", "/api/runs"):
-        response = client.post(endpoint, json=payload)
-        assert response.status_code == 403
-        assert response.json()["detail"] == "executable agents are disabled for the web API by default"
-
-
-def test_api_allows_inline_executable_agents_when_explicitly_enabled(tmp_path, monkeypatch):
-    monkeypatch.setenv("AGENTFLOW_API_ALLOW_EXECUTABLE_AGENTS", "1")
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/runs/validate",
-        json={
-            "pipeline": {
-                "name": "python-opt-in",
-                "working_dir": str(tmp_path),
-                "nodes": [{"id": "py", "agent": "python", "prompt": "print('trusted')"}],
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["pipeline"]["nodes"][0]["agent"] == "python"
-
-
-def test_api_rejects_artifact_path_traversal(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    outside_secret = tmp_path / "secret.txt"
-    outside_secret.write_text("outside-runs-secret", encoding="utf-8")
-    create = client.post(
-        "/api/runs",
-        json={
-            "pipeline": {
-                "name": "artifact",
-                "working_dir": str(tmp_path),
-                "nodes": [{"id": "alpha", "agent": "codex", "prompt": "artifact output"}],
-            }
-        },
-    )
-    run_id = create.json()["id"]
-    asyncio.run(orchestrator.wait(run_id, timeout=5))
-
-    assert client.get(f"/api/runs/{run_id}/artifacts/%2E%2E/run.json").status_code == 400
-    assert client.get("/api/runs/%2E%2E/artifacts/%2E%2E/secret.txt").status_code == 400
+    payloads["kilo"] = payloads["opencode"]
+    raw = json.dumps(payloads[agent], ensure_ascii=False) if agent in payloads else answer
+    parser = create_trace_parser(agent, "alpha")
+    parser.start_attempt(1)
+    events = parser.feed(raw)
+    assert parser.finalize() == answer
+    events.append(parser.emit("stderr", "stderr", "diagnostic", "diagnostic", source="stderr"))
+    for name, content in {"stdout.log": raw + "\n", "stderr.log": "diagnostic\n",
+                          "output.txt": parser.finalize(),
+                          "trace.jsonl": "".join(e.model_dump_json() + "\n" for e in events)}.items():
+        asyncio.run(store.write_artifact_text("run", "alpha", name, content))
+    base = "/api/runs/run/artifacts/alpha/"
+    assert client.get(base + "output.txt").text == answer
+    assert client.get(base + "stdout.log/tail").json()["lines"] == [raw]
+    assert client.get(base + "stderr.log/tail").json()["lines"] == ["diagnostic"]
+    traces = [json.loads(line) for line in client.get(base + "trace.jsonl/tail").json()["lines"]]
+    assert any(event["content"] == answer for event in traces)
+    assert all(event["agent"] == agent for event in traces)
+    assert traces[-1]["source"] == "stderr"
+    parser.start_attempt(2)
+    assert parser.finalize() == ""
+    retry_events = parser.feed(raw)
+    assert parser.finalize() == answer
+    assert all(event.attempt == 2 for event in retry_events)
 
 
 async def test_store_create_run_rejects_invalid_run_id_atomically(tmp_path):
@@ -265,7 +132,6 @@ async def test_store_create_run_rejects_invalid_run_id_atomically(tmp_path):
     assert store.list_runs() == []
     assert not (tmp_path / "outside").exists()
 
-
 async def test_store_rejects_artifact_write_path_traversal(tmp_path):
     store = RunStore(tmp_path / "runs")
     await store.create_run(
@@ -279,7 +145,6 @@ async def test_store_rejects_artifact_write_path_traversal(tmp_path):
         await store.write_artifact_text("run", "../../outside", "output.txt", "pwned")
     assert not (tmp_path / "outside" / "output.txt").exists()
 
-
 def test_store_rejects_artifact_read_path_traversal(tmp_path):
     store = RunStore(tmp_path / "runs")
     outside_secret = tmp_path / "secret.txt"
@@ -292,71 +157,56 @@ def test_store_rejects_artifact_read_path_traversal(tmp_path):
         store.read_artifact_text("run", "alpha", "secret\x00.txt")
 
 
-def test_api_rejects_non_json_content_type(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    response = client.post(
-        "/api/runs/validate",
-        data=json.dumps({"pipeline": {"name": "ok", "working_dir": str(tmp_path), "nodes": [{"id": "alpha", "agent": "codex", "prompt": "hi"}]}}),
-        headers={"Content-Type": "text/plain"},
-    )
-
-    assert response.status_code == 415
-    assert response.json()["detail"] == "application/json content type required"
-
-
-def test_api_supports_cancel_and_rerun(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
-
-    create = client.post(
-        "/api/runs",
-        json={"pipeline": {"name": "cancel", "working_dir": str(tmp_path), "nodes": [{"id": "slow", "agent": "codex", "prompt": "slow"}]}}
-    )
-    run_id = create.json()["id"]
-    for _ in range(50):
-        run = orchestrator.store.get_run(run_id)
-        if run.status.value == "running":
-            break
-        import time
-        time.sleep(0.05)
-    cancel = client.post(f"/api/runs/{run_id}/cancel")
-    assert cancel.status_code == 200
-    completed = asyncio.run(orchestrator.wait(run_id, timeout=5))
-    assert completed.status.value == "cancelled"
-
-    rerun = client.post(f"/api/runs/{run_id}/rerun")
-    assert rerun.status_code == 200
-    rerun_id = rerun.json()["id"]
-    assert rerun_id != run_id
+def test_monitor_observes_an_external_producer(monitor):
+    store, client = monitor
+    producer = RunStore(store.base_dir)
+    asyncio.run(producer.create_run(RunRecord(id="external", status="running", pipeline={
+        "name": "external", "nodes": [{"id": "alpha", "agent": "shell", "prompt": "fixture"}]})))
+    assert client.get("/api/runs/external").json()["status"] == "running"
+    assert len(client.get("/api/runs").json()) == 2
+    run = producer.get_run("external")
+    run.status = type(run.status)("completed")
+    asyncio.run(producer.persist_run("external"))
+    asyncio.run(producer.append_event("external", RunEvent(run_id="external", type="run_completed", data={"status": "completed"})))
+    assert client.get("/api/runs/external").json()["status"] == "completed"
+    assert "run_completed" in client.get("/api/runs/external/stream").text
 
 
-def test_api_stream_replays_completed_run_and_closes(tmp_path):
-    orchestrator = make_orchestrator(tmp_path)
-    app = create_app(store=orchestrator.store, orchestrator=orchestrator)
-    client = TestClient(app)
+def test_log_tail_handles_empty_partial_crlf_and_large_lines(monitor):
+    store, client = monitor
+    path = store.artifact_path("run", "alpha", "stderr.log")
+    url = "/api/runs/run/artifacts/alpha/stderr.log/tail"
+    path.write_bytes(b"")
+    assert client.get(url).json()["lines"] == []
+    lines = ["x" * 20000, "中文", "", "unterminated"]
+    path.write_bytes("\r\n".join(lines).encode())
+    assert client.get(url).json()["lines"] == lines
+    path.write_bytes(b"invalid \xff\n")
+    assert client.get(url).json()["lines"] == ["invalid \ufffd"]
 
-    create = client.post(
-        "/api/runs",
-        json={
-            "pipeline": {
-                "name": "stream-replay",
-                "working_dir": str(tmp_path),
-                "nodes": [{"id": "alpha", "agent": "codex", "prompt": "stream ok"}],
-            }
-        },
-    )
-    run_id = create.json()["id"]
-    asyncio.run(orchestrator.wait(run_id, timeout=5))
 
-    with client.stream("GET", f"/api/runs/{run_id}/stream") as response:
-        lines = [line for line in response.iter_lines() if line]
+async def test_api_zcode_output_from_mock_execution(tmp_path):
+    from agentflow.agents.base import AgentAdapter
+    from agentflow.agents.registry import AdapterRegistry
+    from agentflow.orchestrator import Orchestrator
+    from agentflow.prepared import PreparedExecution
+    from agentflow.runners.registry import RunnerRegistry
+    from agentflow.specs import PipelineSpec
 
-    assert response.status_code == 200
-    events = [json.loads(line.removeprefix("data: ")) for line in lines if line.startswith("data: ")]
-    assert events
-    assert events[-1]["type"] == "run_completed"
-    assert any(event["type"] == "node_completed" for event in events)
+    class MockZCode(AgentAdapter):
+        def prepare(self, node, prompt, paths):
+            return PreparedExecution(command=["python3", "-c", 'import json; print(json.dumps({"response": "zcode complete"}))'],
+                                     env={}, cwd=paths.target_workdir, trace_kind="zcode")
+
+    adapters = AdapterRegistry()
+    adapters.register(AgentKind.ZCODE, MockZCode())
+    store = RunStore(tmp_path / "runs")
+    runtime = Orchestrator(store=store, adapters=adapters, runners=RunnerRegistry())
+    run = await runtime.submit(PipelineSpec.model_validate({"name": "zcode-regression", "working_dir": str(tmp_path),
+        "nodes": [{"id": "alpha", "agent": "zcode", "prompt": "fixture"}]}))
+    completed = await runtime.wait(run.id, timeout=5)
+    assert completed.status.value == "completed"
+    client = TestClient(create_app(store=store))
+    assert client.get(f"/api/runs/{run.id}").json()["nodes"]["alpha"]["output"] == "zcode complete"
+    page = client.get(f"/api/runs/{run.id}/artifacts/alpha/trace.jsonl/tail").json()
+    assert any(json.loads(line)["content"] == "zcode complete" for line in page["lines"])

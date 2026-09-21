@@ -150,21 +150,11 @@ Defaults:
 - host: `127.0.0.1`
 - port: `8000`
 
-The web API only accepts `application/json` for `/api/runs` and `/api/runs/validate`.
-
-For safety, the browser-facing API also disables `pipeline_path` by default, so a request cannot cause AgentFlow to execute a local `.py` pipeline file just by naming its path.
-
-Inline `shell` and `python` utility agents are also disabled for web API requests by default, so a submitted pipeline cannot directly become local command execution through the browser/API control plane.
-
-If you intentionally want to allow filesystem path loading or inline executable utility agents from the local web API in a trusted environment, opt in explicitly:
-
-```bash
-AGENTFLOW_API_ALLOW_PIPELINE_PATH=1 \
-AGENTFLOW_API_ALLOW_EXECUTABLE_AGENTS=1 \
-agentflow serve
-```
-
-Treat those overrides as trusted operator-only settings.
+The monitor HTTP service is read-only: only GET and HEAD are permitted.
+Creating, validating, cancelling, and rerunning pipelines through HTTP is no
+longer supported. The previous `AGENTFLOW_API_ALLOW_PIPELINE_PATH` and
+`AGENTFLOW_API_ALLOW_EXECUTABLE_AGENTS` settings do not enable writes.
+Use the CLI or Python APIs to manage runs. See [Monitor behavior](monitor.md).
 
 ## Tuned Agents And Evolution
 

@@ -21,9 +21,11 @@ async function mock(page, { empty = false, fail = false } = {}) {
   const runs = empty ? [] : [fixture('first-run', 'running', ['prepare', 'execute']), fixture('second-run', 'completed', ['different_node'])];
   await page.route('**/api/**', async route => {
     const path = new URL(route.request().url()).pathname;
+    if (!['GET', 'HEAD'].includes(route.request().method())) errors.push('Mutating request');
     if (fail) return route.fulfill({ status: 503, body: 'Monitor unavailable' });
     if (path.endsWith('/stream')) return route.fulfill({ contentType: 'text/event-stream', body: ': fixture\n\n' });
     const value = path === '/api/runs' ? runs : path.endsWith('/events') ? []
+      : path.endsWith('/tail') ? { lines: ['Fixture log contents'], before: 0, end: 20, has_more: false }
       : path.endsWith('/launch.json') ? { command: ['fixture-command', '--example'] }
       : path.includes('/artifacts/') ? 'Fixture log contents'
       : runs.find(run => path === `/api/runs/${run.id}`) || {};
@@ -59,7 +61,7 @@ test('monitor links history, graph, inspector and artifact views', async ({ page
   await page.keyboard.press('Enter');
   await expect(page.locator('#run-meta')).toHaveText('Another workflow');
   await expect(page.locator('#selected-node')).toHaveText('different_node');
-  await expect(page.locator('#cancel-run')).toBeDisabled();
+  await expect(page.locator('#cancel-run, #rerun-run, #run-pipeline')).toHaveCount(0);
   await page.locator('#run-search').fill('no match');
   await expect(page.locator('#runs')).toContainText('No matching runs');
   expect(errors).toEqual([]);
@@ -82,7 +84,7 @@ test('empty history and API failure remain understandable', async ({ page }) => 
   await expect(page.locator('#runs')).toContainText('No executions yet');
   await expect(page.locator('#graph')).toContainText('Your workflow, at a glance');
   await expect(page.locator('#detail')).toContainText('A closer look');
-  await expect(page.locator('#rerun-run')).toBeDisabled();
+  await expect(page.locator('#rerun-run')).toHaveCount(0);
   await page.unroute('**/api/**');
   await mock(page, { fail: true });
   await expect(page.locator('#banner')).toContainText('Monitor unavailable');
@@ -157,3 +159,40 @@ test('touch dragging moves a node without scrolling the page', async ({ page }) 
   expect(await page.evaluate(() => scrollY)).toBe(scroll);
   await cdp.detach();
 });
+
+
+for (const tab of ['Stdout', 'Stderr', 'Trace']) {
+  test(`${tab} follows the newest 50 entries and prepends history without jumping`, async ({ page }) => {
+    await mock(page);
+    let count = 120;
+    const name = tab === 'Trace' ? 'trace.jsonl' : `${tab.toLowerCase()}.log`;
+    await page.route(`**/artifacts/**/${name}/tail?**`, async route => {
+      const url = new URL(route.request().url());
+      const end = url.searchParams.has('before') ? Number(url.searchParams.get('before')) : count;
+      const start = Math.max(0, end - 50);
+      const lines = Array.from({ length: end - start }, (_, i) => {
+        const content = `entry ${start + i} <script>safe</script>`;
+        return tab === 'Trace' ? JSON.stringify({ agent: 'custom-agent', kind: 'tool', title: 'Result', content }) : content;
+      });
+      await route.fulfill({ json: { lines, before: start, end, has_more: start > 0 } });
+    });
+    await page.getByRole('tab', { name: tab, exact: true }).click();
+    const viewport = page.locator('.log-viewport');
+    await expect(viewport.locator('.log-line')).toHaveCount(50);
+    await expect(viewport).toContainText('entry 119');
+    await expect(viewport).not.toContainText('entry 69 ');
+    count = 121;
+    await expect(viewport).toContainText('entry 120', { timeout: 4000 });
+    await viewport.evaluate(el => { el.scrollTop = 0; });
+    await expect(viewport.locator('.log-line')).toHaveCount(100);
+    expect(await viewport.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+    count = 122;
+    await page.waitForTimeout(1700);
+    await expect(viewport).not.toContainText('entry 121');
+    await viewport.evaluate(el => { el.scrollTop = 0; });
+    await expect(viewport).toContainText('entry 0 ');
+    await viewport.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    await expect(viewport).toContainText('entry 121', { timeout: 4000 });
+    expect(await page.locator('.log-viewport script').count()).toBe(0);
+  });
+}

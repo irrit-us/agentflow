@@ -306,3 +306,14 @@ def test_zcode_trace_parser_extracts_headless_response():
     assert events[0].content == "zcode answer"
     assert parser.finalize() == "zcode answer"
     assert parser.supports_raw_stdout_fallback() is False
+
+
+def test_zcode_retry_discards_partial_document_from_previous_attempt():
+    parser = create_trace_parser(AgentKind.ZCODE, "implement")
+    parser.start_attempt(1)
+    assert parser.feed('{') == []
+    assert parser.feed('"response": "incomplete"') == []
+    parser.start_attempt(2)
+    events = parser.feed('{"response": "retry answer"}')
+    assert parser.finalize() == "retry answer"
+    assert events[0].attempt == 2

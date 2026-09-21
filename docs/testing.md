@@ -52,7 +52,9 @@ npx playwright install chromium
 npx playwright test
 ```
 
-The Playwright tests use lightweight mock `codex` and `claude` executables under `tests/e2e/bin/` and exercise validation, retries, rerun, cancellation, and artifact viewing through the web UI.
+The Playwright monitor tests mock run and artifact responses and verify read-only
+HTTP enforcement, responsive layout, graph navigation, and live log windows.
+Execution, retries, cancellation, and reruns are covered by Python runtime tests.
 
 Run a real local smoke check with your installed CLIs:
 

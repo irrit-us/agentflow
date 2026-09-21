@@ -119,8 +119,37 @@ class RunStore:
     async def write_artifact_json(self, run_id: str, node_id: str, name: str, payload: object) -> None:
         await self.write_artifact_text(run_id, node_id, name, json.dumps(payload, ensure_ascii=False, indent=2))
 
+    def readable_artifact_path(self, run_id: str, node_id: str, name: str) -> Path:
+        path = (self.base_dir / _safe_path_segment(run_id, "run_id") / "artifacts"
+                / _safe_path_segment(node_id, "node_id") / _safe_path_segment(name, "artifact name"))
+        if not path.resolve().is_relative_to(self.base_dir.resolve()):
+            raise ValueError("artifact path escapes run store")
+        return path
+
+    def read_artifact_tail(self, run_id: str, node_id: str, name: str, *,
+                           limit: int = 50, before: int | None = None) -> dict:
+        """Read a bounded line window backwards; byte cursors remain stable as files grow."""
+        if not 1 <= limit <= 200 or (before is not None and before < 0):
+            raise ValueError("invalid log window")
+        path = self.readable_artifact_path(run_id, node_id, name)
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            size = stream.tell()
+            end = size if before is None else min(before, size)
+            position = end
+            data = b""
+            while position > 0 and data.count(b"\n") <= limit:
+                count = min(8192, position)
+                position -= count
+                stream.seek(position)
+                data = stream.read(count) + data
+            lines = data.splitlines(keepends=True)[-limit:]
+            start = end - sum(map(len, lines))
+        return {"lines": [line.decode("utf-8", errors="replace").rstrip("\r\n") for line in lines],
+                "before": start, "end": end, "has_more": start > 0}
+
     def read_artifact_text(self, run_id: str, node_id: str, name: str) -> str:
-        return self.artifact_path(run_id, node_id, name).read_text(encoding="utf-8")
+        return self.readable_artifact_path(run_id, node_id, name).read_text(encoding="utf-8", errors="replace")
 
     def get_run(self, run_id: str) -> RunRecord:
         return self._runs[run_id]

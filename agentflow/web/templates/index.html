@@ -12,7 +12,7 @@
       <header class="topbar">
         <div class="brand">
           <div class="brand-lockup"><span class="brand-symbol" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M8 8h8v8h8M8 8v16h16"/><circle cx="8" cy="8" r="3"/><circle cx="16" cy="16" r="3"/><circle cx="24" cy="24" r="3"/></svg></span><div><h1>AgentFlow</h1><span class="brand-caption">Execution workspace</span></div></div>
-          <span class="workspace-label">Run monitor</span>
+          <span class="workspace-label">Read-only monitor</span>
         </div>
         <div class="topbar-tools">
         <div class="status-strip" aria-label="Run metrics">
@@ -47,10 +47,8 @@
               <strong id="run-meta">Select an execution</strong>
               <span id="run-context" class="small">Inspect progress, dependencies, and node activity.</span>
             </div>
-            <div class="button-row" aria-label="Run action controls">
+            <div class="button-row" aria-label="Run status">
               <span id="run-status" class="status-pill" aria-label="Current run status" aria-live="polite" aria-atomic="true">idle</span>
-              <button id="cancel-run" type="button" aria-label="Cancel current run">Cancel</button>
-              <button id="rerun-run" type="button" aria-label="Rerun current pipeline">Rerun</button>
             </div>
           </div>
           <div id="node-summary" class="node-summary" aria-label="Node status summary"></div>
@@ -71,11 +69,6 @@
         </aside>
       </div>
 
-      <button id="load-example" type="button" hidden aria-label="Load example pipeline">Load example</button>
-      <button id="validate-pipeline" type="button" hidden aria-label="Validate pipeline">Validate</button>
-      <button id="run-pipeline" type="button" hidden aria-label="Run pipeline">Run pipeline</button>
-      <input id="pipeline-base-dir" type="hidden" value="{{ base_dir }}">
-      <textarea id="pipeline-input" hidden>{{ example }}</textarea>
     </div>
 
     <script src="/static/app.js"></script>

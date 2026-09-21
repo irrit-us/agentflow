@@ -9579,3 +9579,15 @@ def test_smoke_failed_preflight_honors_json_summary_output(monkeypatch):
         "counts": {"ok": 0, "warning": 0, "failed": 1},
         "checks": [{"name": "kimi_shell_helper", "status": "failed", "detail": "missing"}],
     }
+
+
+def test_serve_builds_only_a_read_only_store(tmp_path, monkeypatch):
+    def no_runtime(*args, **kwargs):
+        raise AssertionError("serve must not build an execution runtime")
+    observed = {}
+    monkeypatch.setattr(agentflow.cli, "_build_runtime", no_runtime)
+    monkeypatch.setattr(agentflow.cli, "_create_web_app", lambda **kwargs: observed.update(kwargs) or "monitor")
+    monkeypatch.setattr(agentflow.cli, "_serve_web_app", lambda *args, **kwargs: None)
+    result = runner.invoke(app, ["serve", "--runs-dir", str(tmp_path / "runs")])
+    assert result.exit_code == 0, result.output
+    assert observed["orchestrator"] is None

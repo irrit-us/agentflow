@@ -888,3 +888,8 @@ button:focus-visible, input:focus-visible, [tabindex]:focus-visible { outline: 2
 .app-shell #detail .trace-card pre, .app-shell #detail .trace-section {
   background: var(--canvas); color: var(--text); border-color: var(--border);
 }
+
+.log-viewport { height: 360px; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; border: 1px solid var(--border); margin-top: 8px; padding: 10px; }
+#detail .log-line { margin: 0; padding: 0; border: 0 !important; white-space: pre-wrap; overflow-wrap: anywhere; min-height: 1.6em; font-size: 12px; line-height: 1.6; }
+#detail .log-view .log-viewport { background: var(--canvas); }
+.log-window-label { min-height: 32px; }

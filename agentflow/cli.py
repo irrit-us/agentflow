@@ -2535,8 +2535,8 @@ def serve(
     runs_dir: str = typer.Option(".agentflow/runs", envvar="AGENTFLOW_RUNS_DIR"),
     max_concurrent_runs: int = typer.Option(2, envvar="AGENTFLOW_MAX_CONCURRENT_RUNS"),
 ) -> None:
-    store, orchestrator = _build_runtime(runs_dir, max_concurrent_runs)
-    _serve_web_app(_create_web_app(store=store, orchestrator=orchestrator), host=host, port=port)
+    store = _build_store(runs_dir)
+    _serve_web_app(_create_web_app(store=store, orchestrator=None), host=host, port=port)
 
 
 @app.command()

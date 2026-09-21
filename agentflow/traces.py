@@ -573,7 +573,7 @@ class ZCodeTraceParser(BaseTraceParser):
         return False
 
     def start_attempt(self, attempt: int) -> None:
-        super().start_attempt(attempt)
+        BaseTraceParser.start_attempt(self, attempt)
         self.document_lines.clear()
 
     def feed(self, line: str) -> list[NormalizedTraceEvent]:

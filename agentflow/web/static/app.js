@@ -14,6 +14,93 @@ const state = {
   detailTab: null,
 };
 
+// Read-only file windows share the same renderer for every agent provider.
+let logView = null;
+function plainLogText(value) {
+  return String(value ?? '').replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '');
+}
+function mountLogView(nodeId, tab) {
+  const key = `${state.runId}:${nodeId}:${tab}`;
+  const mount = document.getElementById('log-mount');
+  if (!mount) return;
+  if (!logView || logView.key !== key) {
+    const root = document.createElement('div');
+    root.className = 'log-view';
+    root.innerHTML = '<div class="log-window-label small" aria-live="polite"></div><div class="log-viewport" tabindex="0" aria-label="Log history"></div>';
+    logView = { key, runId: state.runId, nodeId, tab, root, lines: [], before: null,
+      hasMore: false, following: true, loading: false, loaded: false, top: null };
+    const view = logView;
+    view.viewport = root.querySelector('.log-viewport');
+    view.viewport.addEventListener('scroll', () => {
+      if (!view.loaded || view.loading) return;
+      view.following = view.viewport.scrollHeight - view.viewport.clientHeight - view.viewport.scrollTop < 24;
+      if (view.viewport.scrollTop < 24 && view.hasMore && !view.following) loadLogWindow(view, true);
+    });
+    // Wheel-up also loads history when the first window is shorter than its viewport.
+    view.viewport.addEventListener('wheel', event => {
+      if (event.deltaY < 0 && view.viewport.scrollTop < 24 && view.hasMore) {
+        view.following = false;
+        loadLogWindow(view, true);
+      }
+    }, { passive: true });
+  }
+  mount.appendChild(logView.root);
+  if (logView.top !== null) logView.viewport.scrollTop = logView.top;
+  if (!logView.loaded) loadLogWindow(logView);
+}
+function renderLogLines(view) {
+  const fragment = document.createDocumentFragment();
+  for (const line of view.lines) {
+    const pre = document.createElement('pre');
+    pre.className = 'log-line';
+    let text = line;
+    if (view.tab === 'trace') {
+      try {
+        const event = JSON.parse(line);
+        const content = event.content || event.raw || '';
+        text = `[${event.agent || 'agent'} · ${event.kind || 'event'} · ${event.source || 'stdout'} · attempt ${event.attempt || 1}] ${event.title || ''}\n`
+          + (typeof content === 'string' ? content : JSON.stringify(content, null, 2));
+      } catch (_) { /* Keep incomplete or unknown records visible verbatim. */ }
+    }
+    pre.textContent = plainLogText(text);
+    fragment.appendChild(pre);
+  }
+  view.viewport.replaceChildren(fragment);
+  view.root.querySelector('.log-window-label').textContent = view.lines.length
+    ? `${view.lines.length} ${view.tab === 'trace' ? 'records' : 'lines'} · ${view.hasMore ? 'Scroll up for earlier content' : 'Beginning of log'} · ${view.following ? 'Following latest' : 'Reading history'}`
+    : 'No log content yet.';
+}
+async function loadLogWindow(view, older = false) {
+  if (view.loading || (older && !view.hasMore)) return;
+  view.loading = true;
+  const oldTop = view.viewport.scrollTop;
+  const oldHeight = view.viewport.scrollHeight;
+  const name = view.tab === 'trace' ? 'trace.jsonl' : `${view.tab}.log`;
+  try {
+    const query = `limit=50${older ? `&before=${view.before}` : ''}`;
+    const page = await api(`/api/runs/${encodeURIComponent(view.runId)}/artifacts/${encodeURIComponent(view.nodeId)}/${name}/tail?${query}`);
+    if (logView !== view) return;
+    if (!Array.isArray(page.lines)) throw new Error('Invalid log window');
+    // Do not replace history if the reader scrolled while the request was in flight.
+    if (!older && view.loaded && view.viewport.scrollHeight - view.viewport.clientHeight - view.viewport.scrollTop >= 24) {
+      view.following = false;
+      return;
+    }
+    view.lines = older ? [...page.lines, ...view.lines] : page.lines;
+    view.before = page.before;
+    view.hasMore = page.has_more;
+    view.loaded = true;
+    renderLogLines(view);
+    view.viewport.scrollTop = older ? oldTop + view.viewport.scrollHeight - oldHeight : view.viewport.scrollHeight;
+    view.top = view.viewport.scrollTop;
+  } catch (error) {
+    if (logView === view) view.root.querySelector('.log-window-label').textContent = `Waiting for log: ${error.message}`;
+  } finally {
+    view.loading = false;
+  }
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -1437,8 +1524,6 @@ function renderRunMeta() {
   document.getElementById("run-context").textContent = run
     ? `${formatDate(run.created_at)} · ${formatDuration(run)} · ${run.id.slice(0, 8)}`
     : "Inspect progress, dependencies, and node activity.";
-  document.getElementById("cancel-run").disabled = !run || !["queued", "running", "cancelling"].includes(status);
-  document.getElementById("rerun-run").disabled = !run;
   const nodes = Object.values(state.nodes);
   const counts = [
     ["Completed", "completed", nodes.filter(node => node.status === "completed").length],
@@ -2126,6 +2211,7 @@ async function renderDetail() {
   const detail = document.getElementById("detail");
   const previousScrollTop = detail.scrollTop;
   const openTraceKeys = new Set(Array.from(detail.querySelectorAll(".trace-card[open]")).map((card) => card.dataset.traceKey));
+  if (logView?.root.isConnected) logView.top = logView.viewport.scrollTop;
   const selectedNodeId = state.selectedNodeId;
   const selected = selectedNodeId && state.nodes[selectedNodeId];
   document.getElementById("selected-node").textContent = selectedNodeId || "None selected";
@@ -2197,141 +2283,13 @@ async function renderDetail() {
 
   const lifecycleEventRows = state.events.filter((event) => event.node_id === selectedNodeId && event.type !== "node_trace");
   const lifecycleEvents = lifecycleEventRows.slice(-12).reverse();
-  const traceTimestamps = traceTimestampMap(selectedNodeId);
-  const getCodexItem = (trace) => trace?.raw?.item || trace?.raw?.params?.item || {};
-  const getCodexItemType = (trace) => String(getCodexItem(trace)?.type || getCodexItem(trace)?.details?.type || "").toLowerCase();
-  const isCodexCommandExecution = (trace) => {
-    const title = String(trace?.title || "").toLowerCase();
-    const itemType = getCodexItemType(trace);
-    return itemType === "command_execution" || title.includes("command_execution");
-  };
-  const isCodexAgentMessage = (trace) => {
-    const title = String(trace?.title || "").toLowerCase();
-    const itemType = getCodexItemType(trace);
-    return itemType === "agent_message" || itemType === "agentmessage" || title.includes("agent_message");
-  };
-  const isCodexLifecycleEvent = (trace) => {
-    const title = String(trace?.title || "").toLowerCase();
-    return trace?.kind === "event" && ["turn.started", "thread.started"].includes(title);
-  };
-  const extractCodexMessageText = (value) => {
-    if (value === null || value === undefined) return "";
-    if (typeof value === "string") return value;
-    if (Array.isArray(value)) {
-      return value
-        .map((part) => extractCodexMessageText(part))
-        .filter(Boolean)
-        .join("\n\n");
-    }
-    if (typeof value === "object") {
-      return extractCodexMessageText(
-        value.text ??
-        value.output_text ??
-        value.content ??
-        value.message ??
-        value.output ??
-        value.result ??
-        ""
-      );
-    }
-    return String(value);
-  };
-  const isFileEditCommand = (command) => /\bsed\b|\bpatch\b|cat\s*>/i.test(command);
-  const extractCommandFilename = (command) => {
-    const catMatch = command.match(/cat\s*>\s*['"]?([^'"\s|;&]+)/);
-    if (catMatch) return catMatch[1];
-    const patchMatch = command.match(/\bpatch\b(?:\s+[-\w.=\/]+)*\s+['"]?([^'"\s|;&]+)/);
-    if (patchMatch) return patchMatch[1];
-    const pathMatches = [...command.matchAll(/(?:^|\s)(['"]?)([^'"`\s|;&]+(?:\/[^'"`\s|;&]+|[.][^'"`\s|;&]+))\1/g)];
-    return pathMatches.length ? pathMatches[pathMatches.length - 1][2] : "";
-  };
-  const renderHighlightedCommand = (command, filename) => {
-    if (!filename) return escapeHtml(command);
-    const start = command.indexOf(filename);
-    if (start === -1) return escapeHtml(command);
-    const end = start + filename.length;
-    return `${escapeHtml(command.slice(0, start))}<span style="display:inline-block;padding:0.04rem 0.32rem;border-radius:6px;background:rgba(245, 158, 11, 0.18);border:1px solid rgba(245, 158, 11, 0.32);color:#fef3c7;">${escapeHtml(filename)}</span>${escapeHtml(command.slice(end))}`;
-  };
-  const traceCards = (selected.trace_events || [])
-    .map((trace, index) => ({ trace, index, timestamp: traceTimestamps[index] || null }))
-    .slice(-25)
-    .reverse()
-    .map(({ trace, index, timestamp }) => {
-      const kind = String(trace?.kind || "").toLowerCase();
-      const title = trace?.title || trace?.kind || "Trace event";
-      const traceKey = `${selectedNodeId}:${index}:${trace?.kind || "trace"}:${title}`;
-      const isError = kind.includes("error") || String(title).toLowerCase().includes("error");
-      const dotColor = isError
-        ? "#ef4444"
-        : ["tool_call", "tool_use", "toolcall"].includes(kind)
-          ? "#3b82f6"
-          : "#94a3b8";
-      let content = trace?.content ?? "";
-      if (typeof content === "string") {
-        const trimmed = content.trim();
-        if (trimmed && ["{", "[", "\""].includes(trimmed[0])) {
-          try {
-            content = JSON.parse(trimmed);
-          } catch {}
-        }
-      }
-
-      if (isCodexCommandExecution(trace)) {
-        const item = getCodexItem(trace);
-        const command = String(item.command || item.details?.command || trace?.content || "(no command)").trim();
-        const exitCode = item.exit_code;
-        const output = item.aggregated_output ?? item.output ?? (trace?.kind === "item_completed" ? trace?.content ?? "" : "");
-        const fileEdit = isFileEditCommand(command);
-        const filename = fileEdit ? extractCommandFilename(command) : "";
-        const exitBadgeClass = exitCode === null || exitCode === undefined
-          ? ""
-          : Number(exitCode) === 0
-            ? "trace-pill-success"
-            : "trace-pill-failure";
-
-        return `
-          <div style="padding:8px 0;" data-trace-key="${escapeHtml(traceKey)}">
-            <pre style="margin:0;padding:8px 12px;background:#f6f8fa;font-size:12px;line-height:1.5;white-space:pre-wrap;word-break:break-word;overflow-x:auto;"><span style="color:var(--muted);">$ </span>${renderHighlightedCommand(command, filename)}</pre>
-            ${exitCode !== null && exitCode !== undefined ? `<span style="font-size:11px;color:${Number(exitCode) === 0 ? 'var(--success)' : 'var(--danger)'};">exit ${exitCode}</span>` : ""}
-            ${output ? `<details><summary style="font-size:11px;color:var(--muted);cursor:pointer;">output</summary><pre style="margin:4px 0 0;padding:8px 12px;background:#f6f8fa;font-size:12px;line-height:1.5;white-space:pre-wrap;max-height:200px;overflow-y:auto;">${escapeHtml(String(output))}</pre></details>` : ""}
-          </div>
-        `;
-      }
-
-      if (isCodexAgentMessage(trace)) {
-        const text = extractCodexMessageText(getCodexItem(trace)?.content || trace?.content);
-        if (!text) return "";
-        return `
-          <div style="padding:8px 0;line-height:1.6;white-space:pre-wrap;" data-trace-key="${escapeHtml(traceKey)}">${escapeHtml(text)}</div>
-        `;
-      }
-
-      if (isCodexLifecycleEvent(trace)) {
-        return "";  // hide lifecycle noise
-      }
-
-      return `
-        <details style="padding:4px 0;" data-trace-key="${escapeHtml(traceKey)}"${isError || openTraceKeys.has(traceKey) ? " open" : ""}>
-          <summary style="cursor:pointer;font-size:12px;color:${isError ? 'var(--danger)' : 'var(--muted)'};">
-              ${escapeHtml(title)}
-          </summary>
-          <div class="trace-card-body">
-            ${renderPreBlock(content, "trace-command-block")}
-          </div>
-        </details>
-      `;
-    })
-    .join("");
   const nextEventSignature = `${selectedNodeId}:${(selected.trace_events || []).length}:${lifecycleEventRows.length}`;
-  const shouldAutoScroll = activeTab === "trace" && state.detailAutoScroll && state.detailEventSignature !== null && state.detailEventSignature !== nextEventSignature;
+
 
   let tabPanelContent = "";
-  if (activeTab === "trace") {
-    tabPanelContent = `
-      <div class="trace-stack">
-        ${traceCards || '<div class="trace-empty">No parsed tool or trace activity yet.</div>'}
-      </div>
-    `;
+  const isLogTab = ["trace", "stdout", "stderr"].includes(activeTab);
+  if (isLogTab) {
+    tabPanelContent = '<div id="log-mount"></div>';
   } else if (activeTab === "output") {
     tabPanelContent = renderDetailPre(selected.output, {
       emptyMessage: "No node output yet.",
@@ -2340,7 +2298,7 @@ async function renderDetail() {
       borderColor: "rgba(15, 23, 42, 0.14)",
     });
   } else {
-    const artifactName = activeTab === "launch" ? "launch.json" : activeTab === "stdout" ? "stdout.log" : "stderr.log";
+    const artifactName = "launch.json";
     let artifactText = "";
     let artifactError = "";
     if (["running", "retrying"].includes(normalizedStatus) && state.runId) {
@@ -2415,6 +2373,8 @@ async function renderDetail() {
     </details>
   `;
 
+  if (isLogTab) mountLogView(selectedNodeId, activeTab);
+
   detail.querySelectorAll("button[data-detail-tab]").forEach((button) => {
     button.onclick = async () => {
       const nextTab = button.dataset.detailTab;
@@ -2426,11 +2386,7 @@ async function renderDetail() {
   });
 
   state.detailEventSignature = nextEventSignature;
-  if (shouldAutoScroll) {
-    window.requestAnimationFrame(() => {
-      detail.scrollTop = detail.scrollHeight;
-    });
-  } else if (nodeChanged) {
+  if (nodeChanged) {
     window.requestAnimationFrame(() => {
       detail.scrollTop = 0;
     });
@@ -2514,7 +2470,9 @@ function applyEvent(event) {
 function connectStream(runId) {
   if (state.eventSource) state.eventSource.close();
   state.eventSource = new EventSource(`/api/runs/${runId}/stream`);
-  state.eventSource.onmessage = (message) => applyEvent(JSON.parse(message.data));
+  state.eventSource.onmessage = (message) => {
+    if (state.runId === runId) applyEvent(JSON.parse(message.data));
+  };
   state.eventSource.onerror = () => {
     if (state.eventSource) state.eventSource.close();
   };
@@ -2542,49 +2500,6 @@ async function openRun(runId) {
   renderGraph();
   await renderDetail();
   connectStream(run.id);
-}
-
-function pipelinePayload() {
-  const pipelineText = document.getElementById("pipeline-input").value;
-  const baseDir = document.getElementById("pipeline-base-dir").value.trim();
-  return baseDir ? { pipeline_text: pipelineText, base_dir: baseDir } : { pipeline_text: pipelineText };
-}
-
-async function validatePipeline() {
-  const response = await api("/api/runs/validate", { method: "POST", body: JSON.stringify(pipelinePayload()) });
-  state.validationPipeline = response.pipeline;
-  state.pipeline = null;
-  state.nodes = {};
-  state.runId = null;
-  state.events = [];
-  state.selectedNodeId = response.pipeline.nodes?.[0]?.id || null;
-  renderRunMeta();
-  renderGraph();
-  await renderDetail();
-  setBanner(`Pipeline validated: ${response.pipeline.name}`, "success");
-}
-
-async function runPipeline() {
-  const run = await api("/api/runs", { method: "POST", body: JSON.stringify(pipelinePayload()) });
-  state.validationPipeline = null;
-  await refreshRuns();
-  await openRun(run.id);
-  setBanner(`Run queued: ${run.id}`, "success");
-}
-
-async function cancelRun() {
-  if (!state.runId) return;
-  await api(`/api/runs/${state.runId}/cancel`, { method: "POST" });
-  setBanner(`Cancellation requested for ${state.runId}`, "success");
-  await openRun(state.runId);
-}
-
-async function rerunRun() {
-  if (!state.runId) return;
-  const rerun = await api(`/api/runs/${state.runId}/rerun`, { method: "POST" });
-  await refreshRuns();
-  await openRun(rerun.id);
-  setBanner(`Rerun queued: ${rerun.id}`, "success");
 }
 
 function ensureTransientUiStyles() {
@@ -2776,17 +2691,6 @@ function showSkeleton(elementId) {
 
 ensureTransientUiStyles();
 
-document.getElementById("load-example").onclick = async () => {
-  const data = await api("/api/examples/default");
-  document.getElementById("pipeline-input").value = data.example;
-  document.getElementById("pipeline-base-dir").value = data.base_dir || "";
-  setBanner(null);
-};
-
-document.getElementById("validate-pipeline").onclick = () => validatePipeline().catch((error) => setBanner(error.message, "error"));
-document.getElementById("run-pipeline").onclick = () => runPipeline().catch((error) => setBanner(error.message, "error"));
-document.getElementById("cancel-run").onclick = () => cancelRun().catch((error) => setBanner(error.message, "error"));
-document.getElementById("rerun-run").onclick = () => rerunRun().catch((error) => setBanner(error.message, "error"));
 document.getElementById("refresh-runs").onclick = () => refreshRuns().catch((error) => setBanner(error.message, "error"));
 document.getElementById("run-search").oninput = renderRuns;
 
@@ -2934,3 +2838,7 @@ document.getElementById("detail").addEventListener("keydown", async (event) => {
   await renderDetail();
   document.querySelector(`[data-detail-tab="${state.detailTab}"]`)?.focus();
 });
+
+setInterval(() => {
+  if (!document.hidden && logView?.root.isConnected && logView.following) loadLogWindow(logView);
+}, 1500);
