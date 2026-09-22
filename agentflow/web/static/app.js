@@ -54,16 +54,17 @@ function renderLogLines(view) {
   for (const line of view.lines) {
     const pre = document.createElement('pre');
     pre.className = 'log-line';
-    let text = line;
-    if (view.tab === 'trace') {
+    let text = line.text;
+    if (view.tab === 'trace' && !line.partialStart && !line.partialEnd) {
       try {
-        const event = JSON.parse(line);
+        const event = JSON.parse(line.text);
         const content = event.content || event.raw || '';
         text = `[${event.agent || 'agent'} · ${event.kind || 'event'} · ${event.source || 'stdout'} · attempt ${event.attempt || 1}] ${event.title || ''}\n`
           + (typeof content === 'string' ? content : JSON.stringify(content, null, 2));
       } catch (_) { /* Keep incomplete or unknown records visible verbatim. */ }
     }
-    pre.textContent = plainLogText(text);
+    pre.textContent = (line.partialStart ? '[Continued from earlier page]\n' : '')
+      + plainLogText(text) + (line.partialEnd ? '\n[Continues on later page]' : '');
     fragment.appendChild(pre);
   }
   view.viewport.replaceChildren(fragment);
@@ -87,7 +88,10 @@ async function loadLogWindow(view, older = false) {
       view.following = false;
       return;
     }
-    view.lines = older ? [...page.lines, ...view.lines] : page.lines;
+    const lines = page.lines.map((text, index) => ({ text,
+      partialStart: index === 0 && page.partial_start,
+      partialEnd: index === page.lines.length - 1 && page.partial_end }));
+    view.lines = older ? [...lines, ...view.lines] : lines;
     view.before = page.before;
     view.hasMore = page.has_more;
     view.loaded = true;
@@ -822,7 +826,7 @@ function renderRuns() {
   });
 }
 
-let showDefaultGraph = false;
+let showFullGraph = false;
 
 function hasReachedNode(result) {
   if (!result) return false;
@@ -836,13 +840,16 @@ function graphDependencies(node) {
 }
 
 function isPotentialNode(node, nodeMap) {
-  return Boolean(node) && !hasReachedNode(nodeMap[node.id]);
+  return Boolean(node) && !hasReachedNode(nodeMap[node.id])
+    && !['skipped', 'cancelled'].includes(nodeMap[node.id]?.status);
 }
 
-function projectMonitorNodes(nodes, nodeMap, pipeline, showDefault = showDefaultGraph) {
+function projectMonitorNodes(nodes, nodeMap, pipeline, showFull = showFullGraph) {
   const byId = new Map(nodes.map(node => [node.id, node]));
   const visible = new Set(nodes.filter(node => hasReachedNode(nodeMap[node.id])).map(node => node.id));
-  if (showDefault) {
+  if (showFull) {
+    nodes.forEach(node => visible.add(node.id));
+  } else {
     const children = new Map(nodes.map(node => [node.id, []]));
     for (const node of nodes) {
       for (const parent of graphDependencies(node)) children.get(parent)?.push(node.id);
@@ -862,7 +869,7 @@ function projectMonitorNodes(nodes, nodeMap, pipeline, showDefault = showDefault
   }
   const aliases = new Map();
   const groups = [];
-  for (const [group, ids] of Object.entries(pipeline?.fanouts || {})) {
+  for (const [group, ids] of Object.entries(showFull ? {} : pipeline?.fanouts || {})) {
     const members = ids.filter(id => visible.has(id) && !hasReachedNode(nodeMap[id]) && !aliases.has(id));
     if (!members.length) continue;
     const id = members[0];
@@ -981,7 +988,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     message.setAttribute("text-anchor", "middle");
     message.setAttribute("fill", "var(--muted)");
     message.setAttribute("font-size", "12");
-    message.textContent = "No nodes reached yet. Use Show default to preview the workflow.";
+    message.textContent = "No active paths remain. Use Show full to inspect the complete workflow.";
     svg.appendChild(message);
   }
 
@@ -1144,7 +1151,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
 
   [
     ["Fit", () => fitGraphView()],
-    ["Show default", () => { showDefaultGraph = !showDefaultGraph; renderGraph(); }],
+    ["Show full", () => { showFullGraph = !showFullGraph; renderGraph(); }],
     ["Zoom+", () => scaleGraphView(1.2)],
     ["Zoom-", () => scaleGraphView(0.8)],
     ["100%", () => resetGraphZoom()],
@@ -1152,7 +1159,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     const button = document.createElement("button");
     button.type = "button";
     button.textContent = label;
-    if (label === "Show default") button.setAttribute("aria-pressed", String(showDefaultGraph));
+    if (label === "Show full") button.setAttribute("aria-pressed", String(showFullGraph));
     button.addEventListener("click", onClick);
     controls.appendChild(button);
   });
@@ -1309,7 +1316,7 @@ function renderGraph(pipelineNodes = null, nodeStatusMap = null) {
     const dependencies = Array.from(new Set(
       (Array.isArray(node.depends_on) ? node.depends_on : []).filter((dependency) => graphViewState.positions[dependency])
     ));
-    if (dependencies.length > highFaninThreshold) {
+    if (!showFullGraph && dependencies.length > highFaninThreshold) {
       const edge = document.createElementNS(ns, "path");
       edge.setAttribute("fill", "none");
       edge.setAttribute("stroke", edgeColor);

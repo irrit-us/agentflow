@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from agentflow.app import create_app
 from agentflow.specs import AgentKind, RunRecord, RunEvent
-from agentflow.store import RunStore
+from agentflow.store import LOG_WINDOW_MAX_BYTES, RunStore
 from agentflow.traces import create_trace_parser
 
 
@@ -185,6 +185,65 @@ def test_log_tail_handles_empty_partial_crlf_and_large_lines(monitor):
     assert client.get(url).json()["lines"] == ["invalid \ufffd"]
 
 
+@pytest.mark.parametrize("text", ["x" * (2 * 1024 * 1024), *["🐈" * 40000 + "x" * n for n in range(4)]])
+def test_log_pages_bound_bytes_and_preserve_long_records(monitor, text):
+    store, client = monitor
+    path = store.artifact_path("run", "alpha", "stdout.log")
+    path.write_text(text, encoding="utf-8")
+    url = "/api/runs/run/artifacts/alpha/stdout.log/tail"
+    pages = []
+    cursor = len(text.encode())
+    while cursor:
+        page = client.get(url, params={"limit": 1, "before": cursor}).json()
+        assert page["end"] == cursor
+        assert 0 < page["end"] - page["before"] <= LOG_WINDOW_MAX_BYTES
+        assert len(page["lines"]) == 1
+        assert "\ufffd" not in page["lines"][0]
+        assert page["partial_start"] == page["has_more"]
+        assert page["partial_end"] == bool(pages)
+        pages.append(page)
+        cursor = page["before"]
+    assert "".join(page["lines"][0] for page in reversed(pages)) == text
+
+
+def test_log_byte_boundary_keeps_crlf_together(monitor):
+    store, client = monitor
+    path = store.artifact_path("run", "alpha", "stdout.log")
+    path.write_bytes(b"prefix\r\n" + b"x" * (LOG_WINDOW_MAX_BYTES - 1))
+    url = "/api/runs/run/artifacts/alpha/stdout.log/tail"
+    page = client.get(url).json()
+    assert page["lines"] == ["x" * (LOG_WINDOW_MAX_BYTES - 1)]
+    assert not page["partial_start"]
+    older = client.get(url, params={"before": page["before"]}).json()
+    assert older["lines"] == ["prefix"]
+    assert not older["partial_end"]
+    assert older["before"] == 0
+
+
+def test_log_line_limit_does_not_mark_complete_record_as_partial(monitor):
+    store, client = monitor
+    store.artifact_path("run", "alpha", "stdout.log").write_bytes(
+        b"x" * (2 * LOG_WINDOW_MAX_BYTES) + b"\nlast\n")
+    page = client.get("/api/runs/run/artifacts/alpha/stdout.log/tail?limit=1").json()
+    assert page["lines"] == ["last"]
+    assert not page["partial_start"]
+    assert not page["partial_end"]
+
+
+def test_log_tail_reads_off_the_event_loop(monitor, monkeypatch):
+    store, client = monitor
+    original = store.read_artifact_tail
+    store.artifact_path("run", "alpha", "stdout.log").write_text("ok", encoding="utf-8")
+
+    def checked_read(*args, **kwargs):
+        with pytest.raises(RuntimeError, match="no running event loop"):
+            asyncio.get_running_loop()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(store, "read_artifact_tail", checked_read)
+    assert client.get("/api/runs/run/artifacts/alpha/stdout.log/tail").json()["lines"] == ["ok"]
+
+
 async def test_api_zcode_output_from_mock_execution(tmp_path):
     from agentflow.agents.base import AgentAdapter
     from agentflow.agents.registry import AdapterRegistry
@@ -210,3 +269,24 @@ async def test_api_zcode_output_from_mock_execution(tmp_path):
     assert client.get(f"/api/runs/{run.id}").json()["nodes"]["alpha"]["output"] == "zcode complete"
     page = client.get(f"/api/runs/{run.id}/artifacts/alpha/trace.jsonl/tail").json()
     assert any(json.loads(line)["content"] == "zcode complete" for line in page["lines"])
+
+
+def test_log_tail_caps_disk_reads(monitor, monkeypatch):
+    import io
+    from types import SimpleNamespace
+
+    store, _ = monitor
+    reads = []
+
+    class BoundedReader(io.BytesIO):
+        def read(self, size=-1):
+            assert size >= 0
+            reads.append(size)
+            return super().read(size)
+
+    stream = BoundedReader(b"x" * (2 * 1024 * 1024))
+    monkeypatch.setattr(store, "readable_artifact_path", lambda *_: SimpleNamespace(open=lambda _: stream))
+    page = store.read_artifact_tail("run", "alpha", "stdout.log", limit=1)
+    assert sum(reads) <= LOG_WINDOW_MAX_BYTES + 1
+    assert page["partial_start"]
+    assert len(page["lines"][0]) == LOG_WINDOW_MAX_BYTES

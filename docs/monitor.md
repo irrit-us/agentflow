@@ -2,13 +2,15 @@
 
 AgentFlow core monitor with the fixed [Catppuccin Mocha palette](https://catppuccin.com/palette/).
 These screenshots were captured on 2026-09-21 using mocked run and artifact
-data. They illustrate the interface, not a live execution or benchmark result.
+data. They illustrate the earlier interface, not a live execution or benchmark
+result; their Show default control predates the current Show full toggle.
 
 The monitor uses one fixed theme, with square corners outside the main graph.
 It supports draggable nodes, canvas panning and zooming, dependency arrows,
-and a tabbed node inspector. By default, only reached nodes appear. The graph's
-**Show default** toggle reveals downstream possibilities, with one representative
-per unreached parallel worker group and all alternative branches. Directed
+and a tabbed node inspector. By default, reached nodes and downstream possibilities appear, with one
+representative per unreached parallel worker group. **Show full** includes skipped
+and cancelled branches, disconnected nodes, every worker, and individual dependency
+arrows. Directed
 return arcs show cycles. History progress counts settled stages against the
 longest acyclic dependency path, independent of worker count or retry count.
 See [Hybrid orchestration](hybrid-orchestration.md#monitor-notation) for the exact
@@ -25,7 +27,17 @@ Stdout and Stderr initially display the latest 50 lines. Trace displays the late
 Scroll upward to prepend earlier windows; the viewport preserves its position.
 At the bottom, the visible log refreshes every 1.5 seconds. While reading history,
 new content does not move the viewport; scroll back to the bottom to follow it.
-File byte cursors keep historical pages stable while producers append output.
+Each log page contains at most 64 KiB of source content, in addition to the line
+limit. Oversized lines or trace records appear in labelled parts; scroll upward
+to retrieve earlier parts. Partial trace records display as raw text. UTF-8
+characters and CRLF pairs stay intact across pages. Reads run in the server's
+worker thread pool.
+
+The tail API returns `partial_start` and `partial_end` flags for fragments at the
+page boundaries. Its `before` and `end` cursors delimit source bytes; requesting
+`before` retrieves preceding content without skipping the rest of a long record.
+The byte limit applies to source content, so JSON escaping can increase the wire
+size. File byte cursors keep historical pages stable while producers append output.
 Raw stdout and stderr remain available for inspection; terminal color escapes
 are stripped only in the display and HTML is rendered as text.
 

@@ -96,7 +96,7 @@ def create_app(*, store: RunStore | None = None, orchestrator: Orchestrator | No
         return PlainTextResponse(content)
 
     @app.get("/api/runs/{run_id}/artifacts/{node_id}/{name}/tail")
-    async def artifact_tail(run_id: str, node_id: str, name: str,
+    def artifact_tail(run_id: str, node_id: str, name: str,
                             limit: int = Query(50, ge=1, le=200),
                             before: int | None = Query(None, ge=0)) -> JSONResponse:
         try:

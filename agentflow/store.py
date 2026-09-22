@@ -12,6 +12,8 @@ from pydantic import ValidationError
 from agentflow.specs import RunEvent, RunRecord
 from agentflow.utils import ensure_dir
 
+LOG_WINDOW_MAX_BYTES = 64 * 1024
+
 
 def _safe_path_segment(value: str, label: str) -> str:
     if not isinstance(value, str) or not value:
@@ -128,7 +130,12 @@ class RunStore:
 
     def read_artifact_tail(self, run_id: str, node_id: str, name: str, *,
                            limit: int = 50, before: int | None = None) -> dict:
-        """Read a bounded line window backwards; byte cursors remain stable as files grow."""
+        """Read at most 64 KiB of log content, splitting oversized records into pages.
+
+        `before` and `end` delimit the returned source bytes. `partial_start`
+        and `partial_end` mark record fragments, which callers must not parse as
+        complete JSONL records. Following `before` retrieves the preceding part.
+        """
         if not 1 <= limit <= 200 or (before is not None and before < 0):
             raise ValueError("invalid log window")
         path = self.readable_artifact_path(run_id, node_id, name)
@@ -136,17 +143,27 @@ class RunStore:
             stream.seek(0, 2)
             size = stream.tell()
             end = size if before is None else min(before, size)
-            position = end
-            data = b""
-            while position > 0 and data.count(b"\n") <= limit:
-                count = min(8192, position)
-                position -= count
-                stream.seek(position)
-                data = stream.read(count) + data
+            position = max(0, end - LOG_WINDOW_MAX_BYTES)
+            # One lookbehind byte identifies whether the page starts mid-record.
+            stream.seek(max(0, position - 1))
+            previous = stream.read(1) if position else b""
+            data = stream.read(end - position)
+            # Keep valid UTF-8 code points and CRLF delimiters on one page.
+            offset = 0
+            while position > 0 and offset < min(3, len(data)) and 0x80 <= data[offset] <= 0xBF:
+                offset += 1
+            if offset == 0 and previous == b"\r" and data.startswith(b"\n"):
+                offset = 1
+            if offset:
+                previous = data[offset - 1:offset]
+                data = data[offset:]
+                position += offset
             lines = data.splitlines(keepends=True)[-limit:]
             start = end - sum(map(len, lines))
         return {"lines": [line.decode("utf-8", errors="replace").rstrip("\r\n") for line in lines],
-                "before": start, "end": end, "has_more": start > 0}
+                "before": start, "end": end, "has_more": start > 0,
+                "partial_start": bool(lines) and start == position and start > 0 and previous not in {b"\n", b"\r"},
+                "partial_end": bool(lines) and end < size and not lines[-1].endswith((b"\n", b"\r"))}
 
     def read_artifact_text(self, run_id: str, node_id: str, name: str) -> str:
         return self.readable_artifact_path(run_id, node_id, name).read_text(encoding="utf-8", errors="replace")

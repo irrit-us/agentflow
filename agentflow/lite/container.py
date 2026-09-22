@@ -108,13 +108,17 @@ class DockerExecutor:
     def _force_remove(self, container_name: str) -> str:
         """Best-effort container cleanup after a timeout; never raises."""
         try:
-            subprocess.run(
+            completed = subprocess.run(
                 [self.docker_bin, "rm", "-f", container_name],
                 capture_output=True,
                 timeout=10,
             )
         except (subprocess.TimeoutExpired, OSError) as exc:
             return f"\n[warning: failed to remove container {container_name}: {exc}]"
+        if completed.returncode != 0:
+            diagnostic = _as_text(completed.stderr).strip()[:1000]
+            return (f"\n[warning: failed to remove container {container_name}: "
+                    f"exit code {completed.returncode}; {diagnostic or 'no diagnostic'}]")
         return f"\n[container {container_name} force-removed after timeout]"
 
     def run(

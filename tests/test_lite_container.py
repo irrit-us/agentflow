@@ -140,6 +140,24 @@ class TestRun:
         assert calls[1] == ["docker", "rm", "-f", name]
         assert "force-removed" in result.stderr
 
+    @pytest.mark.parametrize("diagnostic", [b"daemon unavailable", b"", b"permission denied " + b"x" * 10000])
+    def test_timeout_reports_failed_container_removal(self, monkeypatch, diagnostic):
+        def fake_run(argv, **kwargs):
+            if argv[1] == "run":
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"], output=b"partial")
+            return subprocess.CompletedProcess(argv, 1, stdout=b"", stderr=diagnostic)
+
+        monkeypatch.setattr("agentflow.lite.container.subprocess.run", fake_run)
+        result = _executor().run("sleep 999", timeout=5)
+        assert result.timed_out
+        assert result.stdout == "partial"
+        assert "timed out after 5s" in result.stderr
+        assert "failed to remove container" in result.stderr
+        assert "exit code 1" in result.stderr
+        assert "force-removed" not in result.stderr
+        assert (diagnostic.decode()[:1000] or "no diagnostic") in result.stderr
+        assert len(result.stderr) < 1200
+
     def test_output_truncation(self, monkeypatch: pytest.MonkeyPatch):
         big = "x" * 60_000
 

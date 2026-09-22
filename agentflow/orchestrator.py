@@ -486,13 +486,14 @@ class Orchestrator:
             await self.store.persist_run(parent_run_id)
 
             # Score the round and keep the incumbent harness (paper Algorithm 1:
-            # H* updates only when the new score strictly exceeds the incumbent).
+            # Initialize from the first candidate, regardless of score sign;
+            # subsequent rounds must strictly exceed the incumbent).
             round_score = compute_run_score(current_pipeline, final_child)
             round_scores.append(
                 {"round": round_number, "score": round_score, "child_run_id": final_child.id}
             )
             optimization_session["scores"] = round_scores
-            if round_score > best_score:
+            if best_pipeline is None or round_score > best_score:
                 best_score = round_score
                 best_pipeline = current_pipeline
                 optimization_session["best_round"] = round_number

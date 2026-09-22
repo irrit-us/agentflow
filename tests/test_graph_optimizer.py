@@ -426,6 +426,37 @@ def test_optimization_session_keeps_incumbent_pipeline(tmp_path, monkeypatch):
     assert "round one" in best_path.read_text(encoding="utf-8")
 
 
+@pytest.mark.parametrize("scores,best_round", [([-1.0, -10.0], 1), ([-10.0, -1.0], 2),
+                                               ([0.0, 0.0], 1), ([-1.0, 0.0], 2)])
+def test_optimization_selects_nonpositive_incumbent(tmp_path, monkeypatch, scores, best_round):
+    orchestrator = make_orchestrator(tmp_path)
+    remaining_scores = iter(scores)
+    monkeypatch.setattr("agentflow.orchestrator.compute_run_score", lambda *_: next(remaining_scores))
+
+    def fake_optimizer(_optimizer, *, prompt, repo_dir, runtime_dir, env):
+        if "diagnosing" not in prompt:
+            path = repo_dir / "pipeline.py"
+            path.write_text(path.read_text(encoding="utf-8").replace("round one", "round two"), encoding="utf-8")
+        return CommandExecution(command="mock", exit_code=0, stdout="done", stderr="")
+
+    monkeypatch.setattr("agentflow.orchestrator._run_optimizer", fake_optimizer)
+    pipeline = PipelineSpec.model_validate({
+        "name": "nonpositive-scores", "working_dir": str(tmp_path), "optimizer": "codex", "n_run": 2,
+        "nodes": [{"id": "probe", "agent": "codex", "prompt": "round one"}],
+    })
+    run = asyncio.run(orchestrator.submit(pipeline))
+    completed = asyncio.run(orchestrator.wait(run.id, timeout=60))
+    session = completed.optimization_session
+    assert completed.status == RunStatus.COMPLETED
+    assert session["best_round"] == best_round
+    assert session["best_score"] == scores[best_round - 1]
+    assert [entry["score"] for entry in session["scores"]] == scores
+    expected = "round one" if best_round == 1 else "round two"
+    assert completed.pipeline.node_map["probe"].prompt == expected
+    saved = load_pipeline_from_path(Path(session["best_pipeline_path"]))
+    assert saved.node_map["probe"].prompt == expected
+
+
 def test_parse_diagnosis_extracts_four_fields():
     from agentflow.graph_optimizer import parse_diagnosis
 

@@ -197,7 +197,26 @@ for (const tab of ['Stdout', 'Stderr', 'Trace']) {
   });
 }
 
-test('reached-only view expands every future branch and one parallel worker preview', async ({ page }) => {
+test('long trace records remain labelled fragments while paging through history', async ({ page }) => {
+  const errors = await mock(page);
+  await page.route('**/artifacts/**/trace.jsonl/tail?**', route => {
+    const older = new URL(route.request().url()).searchParams.has('before');
+    return route.fulfill({ json: older
+      ? { lines: ['{"content":"fragment"}'], before: 0, end: 10, has_more: false, partial_start: false, partial_end: true }
+      : { lines: ['record tail'], before: 10, end: 20, has_more: true, partial_start: true, partial_end: false } });
+  });
+  await page.getByRole('tab', { name: 'Trace', exact: true }).click();
+  const viewport = page.locator('.log-viewport');
+  await expect(viewport).toContainText('[Continued from earlier page]');
+  await viewport.dispatchEvent('wheel', { deltaY: -100 });
+  await expect(viewport.locator('.log-line')).toHaveCount(2);
+  await expect(viewport.locator('.log-line').first()).toContainText('{"content":"fragment"}');
+  await expect(viewport).toContainText('[Continues on later page]');
+  await expect(page.locator('.log-window-label')).toContainText('Beginning of log');
+  expect(errors).toEqual([]);
+});
+
+test('default view previews future branches and Show full expands every worker', async ({ page }) => {
   const errors = await mock(page);
   const run = fixture('branched', 'running', ['gate', 'worker_0', 'worker_1', 'worker_2', 'alternative', 'join']);
   run.pipeline.fanouts = { worker: ['worker_0', 'worker_1', 'worker_2'] };
@@ -217,11 +236,8 @@ test('reached-only view expands every future branch and one parallel worker prev
   });
   await page.reload();
   await expect(page.locator('[data-node-id="gate"]')).toBeVisible();
-  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(1);
-  const toggle = page.getByRole('button', { name: 'Show default', exact: true });
+  const toggle = page.getByRole('button', { name: 'Show full', exact: true });
   await expect(toggle).toHaveAttribute('aria-pressed', 'false');
-  await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
   const preview = page.locator('[data-kind="worker-preview"]');
   await expect(preview).toHaveCount(1);
   await expect(preview).toContainText('worker ×3');
@@ -233,7 +249,11 @@ test('reached-only view expands every future branch and one parallel worker prev
   await expect(preview).toContainText('worker ×2');
   await expect(page.locator('[data-node-id="worker_0"]')).toHaveAttribute('data-kind', 'utility');
   await toggle.click();
-  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(2);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(6);
+  await expect(preview).toHaveCount(0);
+  await toggle.click();
+  await expect(preview).toContainText('worker ×2');
   await expect(page.locator('[data-node-id="worker_0"]')).toBeVisible();
   await expect(page.locator('path[data-to-node="worker_0"]')).not.toHaveAttribute('stroke-dasharray');
   expect(errors).toEqual([]);
@@ -247,13 +267,57 @@ test('projection retains execution history and omits skipped, cancelled and unre
       { id: 'future', depends_on: ['reset'] }, { id: 'unrelated' }];
     const statuses = { root: { status: 'completed' }, skipped: { status: 'skipped' },
       cancelled: { status: 'cancelled' }, reset: { status: 'pending', current_attempt: 2 } };
-    return { reached: projectMonitorNodes(nodes, statuses, {}, false).map(node => node.id),
-      defaults: projectMonitorNodes(nodes, statuses, {}, true).map(node => node.id) };
+    return { defaults: projectMonitorNodes(nodes, statuses, {}, false).map(node => node.id),
+      full: projectMonitorNodes(nodes, statuses, {}, true).map(node => node.id) };
   });
-  expect(result).toEqual({ reached: ['root', 'reset'], defaults: ['root', 'reset', 'future'] });
+  expect(result).toEqual({ defaults: ['root', 'reset', 'future'], full: ['root', 'skipped', 'cancelled', 'reset', 'future', 'unrelated'] });
 });
 
-test('an unstarted run still offers Show default without exposing execution controls', async ({ page }) => {
+test('Show full restores missed branches, their descendants and disconnected nodes for inspection', async ({ page }) => {
+  const errors = await mock(page);
+  await expect(page.locator('[data-node-id="prepare"]')).toBeVisible();
+  await page.evaluate(() => {
+    state.pipeline = { nodes: [{ id: 'root' }, { id: 'missed', depends_on: ['root'] },
+      { id: 'descendant', depends_on: ['missed'], on_failure_restart: ['root'] },
+      { id: 'cancelled', depends_on: ['root'] }, { id: 'disconnected' }] };
+    state.nodes = { root: { status: 'completed' }, missed: { status: 'skipped' },
+      cancelled: { status: 'cancelled' } };
+    renderGraph();
+  });
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(1);
+  const toggle = page.getByRole('button', { name: 'Show full', exact: true });
+  await toggle.click();
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(5);
+  await expect(page.locator('path[data-from-node="root"][data-to-node="missed"]')).not.toHaveAttribute('stroke-dasharray');
+  await expect(page.locator('path[data-from-node="missed"][data-to-node="descendant"]')).toBeAttached();
+  await expect(page.locator('path[data-kind="restart"]')).toHaveAttribute('data-to-node', 'root');
+  await page.locator('[data-node-id="missed"]').click();
+  await expect(page.locator('#selected-node')).toHaveText('missed');
+  await expect(page.locator('#detail')).toContainText('skipped');
+  await page.evaluate(() => renderGraph());
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(5);
+  await toggle.click();
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(1);
+  expect(errors).toEqual([]);
+});
+
+test('Show full draws every dependency in a large fan-in', async ({ page }) => {
+  await mock(page);
+  await expect(page.locator('[data-node-id="prepare"]')).toBeVisible();
+  await page.evaluate(() => {
+    const workers = Array.from({ length: 10 }, (_, i) => ({ id: `worker_${i}` }));
+    state.pipeline = { nodes: [...workers, { id: 'join', depends_on: workers.map(node => node.id) }] };
+    state.nodes = {};
+    renderGraph();
+  });
+  await expect(page.locator('#graph svg')).toContainText('10 inputs');
+  await page.getByRole('button', { name: 'Show full', exact: true }).click();
+  await expect(page.locator('path[data-to-node="join"]')).toHaveCount(10);
+  await expect(page.locator('#graph svg')).not.toContainText('10 inputs');
+});
+
+test('an unstarted run previews the workflow and offers Show full without exposing execution controls', async ({ page }) => {
   await mock(page);
   await expect(page.locator('[data-node-id="prepare"]')).toBeVisible();
   await page.evaluate(() => {
@@ -261,8 +325,8 @@ test('an unstarted run still offers Show default without exposing execution cont
     state.nodes = {};
     renderGraph();
   });
-  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Show default', exact: true }).click();
+  await expect(page.locator('#graph g[data-node-id]')).toHaveCount(2);
+  await page.getByRole('button', { name: 'Show full', exact: true }).click();
   await expect(page.locator('#graph g[data-node-id]')).toHaveCount(2);
 });
 
