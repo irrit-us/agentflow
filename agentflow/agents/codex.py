@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import tomllib
 import re
 
 from agentflow.agents.base import AgentAdapter
@@ -92,6 +94,10 @@ class CodexAdapter(AgentAdapter):
                 "AGENTFLOW_CODEX_SANDBOX_MODE must be one of: "
                 + ", ".join(sorted(self._SUPPORTED_SANDBOX_MODES))
             )
+        if node.cli_options is not None:
+            permitted = {"read-only"} if node.tools == ToolAccess.READ_ONLY else {"read-only", "workspace-write"}
+            if override not in permitted:
+                raise ValueError("Codex sandbox override would weaken the explicit tool policy")
         return override
 
     _WRAPPER_FILENAME = "agentflow_wrapper.md"
@@ -131,6 +137,9 @@ class CodexAdapter(AgentAdapter):
 
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         self.validate_node_features(node)
+        options = node.cli_options
+        if options is not None and options.tool_names is not None:
+            raise ValueError("Codex does not support an exact tool_names allowlist")
         provider = self.provider_config(node.provider, node.agent)
         executable = node.executable or "codex"
         env = merge_env_layers(getattr(provider, "env", None), node.env)
@@ -150,16 +159,29 @@ class CodexAdapter(AgentAdapter):
         ]
         if node.model and not provider:
             command.extend(["--model", node.model])
-        if provider:
+        if provider and not (options and options.isolate_config):
             command.extend(["--profile", "agentflow"])
+        if options and options.isolate_config:
+            command.extend(["--ignore-user-config", "--ephemeral"])
+            for key, value in tomllib.loads(self._render_config(node, provider, sandbox)).items():
+                command.extend(["-c", f"{self._toml_key(key)}={self._format_toml_value(value)}"])
+
         if repo_instructions_ignored:
             command.extend(["--disable", "plugins"])
             command.extend(["--add-dir", paths.target_workdir])
         command.extend(node.extra_args)
         prompt = self._maybe_prepend_wrapper(node, prompt)
-        command.append(prompt)
+        if options and options.system_prompt:
+            prompt = options.system_prompt + self._WRAPPER_SEPARATOR + prompt
+        command.append("-" if options and options.prompt_via_stdin else prompt)
 
         runtime_files: dict[str, str] = {}
+        if options and options.output_schema is not None:
+            runtime_files["output-schema.json"] = json.dumps(options.output_schema)
+            runtime_files["structured-output.json"] = ""
+            command[-1:-1] = ["--output-schema", self.target_path(paths, "output-schema.json"),
+                              "--output-last-message", self.target_path(paths, "structured-output.json")]
+
         runtime_symlinks: dict[str, str] = {}
         is_docker_target = getattr(node.target, "kind", None) == "docker"
         inherit_host_credentials = not is_docker_target or bool(
@@ -175,11 +197,12 @@ class CodexAdapter(AgentAdapter):
             or repo_instructions_ignored
             or (is_docker_target and inherit_host_credentials)
         )
-        if needs_scoped_home:
+        if needs_scoped_home and not (options and options.isolate_config and not is_docker_target):
             codex_home = self.target_path(paths, "codex_home")
             host_config = Path.home() / ".codex" / "config.toml"
             inherit_host_config = (
                 inherit_host_credentials
+                and not (options and options.isolate_config)
                 and provider is None
                 and not node.mcps
                 and host_config.is_file()
@@ -206,6 +229,7 @@ class CodexAdapter(AgentAdapter):
             cwd = self.target_path(paths)
         prepared = PreparedExecution(
             command=command,
+            stdin=prompt if options and options.prompt_via_stdin else None,
             env=env,
             cwd=cwd,
             trace_kind="codex",

@@ -1329,6 +1329,18 @@ class ActivationSpec(BaseModel):
     path: list[str] = Field(default_factory=list)
 
 
+class CLIOptions(BaseModel):
+    """Opt-in native CLI execution controls; no application-specific contracts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    system_prompt: str | None = None
+    output_schema: dict[str, Any] | None = None
+    tool_names: list[str] | None = None
+    isolate_config: bool = False
+    prompt_via_stdin: bool = True
+
+
 class NodeSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1360,6 +1372,7 @@ class NodeSpec(BaseModel):
     provider: str | ProviderConfig | None = None
     model_settings: ModelSettings = Field(default_factory=ModelSettings)
     secret_env: dict[str, SecretRef] = Field(default_factory=dict)
+    cli_options: CLIOptions | None = None
     actor: dict[str, Any] | None = None
     agent_profile: dict[str, Any] | None = None
     extensions: list[str] = Field(default_factory=list)

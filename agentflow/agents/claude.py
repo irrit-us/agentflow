@@ -36,33 +36,54 @@ _CLAUDE_READ_WRITE_TOOLS = _CLAUDE_READ_ONLY_TOOLS + [
 class ClaudeAdapter(AgentAdapter):
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         self.validate_node_features(node)
+        options = node.cli_options
         provider = self.provider_config(node.provider, node.agent)
         executable = node.executable or "claude"
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
         command = [
             executable,
             "-p",
-            prompt,
             "--output-format",
             "stream-json",
             "--verbose",
             "--permission-mode",
-            "bypassPermissions",
+            "dontAsk" if options is not None else "bypassPermissions",
         ]
+        if not (options and options.prompt_via_stdin):
+            command.insert(2, prompt)
+        if options and options.isolate_config:
+            command.extend(["--bare", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"])
         if repo_instructions_ignored:
             command.extend(["--bare", "--add-dir", paths.target_workdir])
         if node.model:
             command.extend(["--model", node.model])
         allowed_tools = _CLAUDE_READ_ONLY_TOOLS if node.tools == ToolAccess.READ_ONLY else _CLAUDE_READ_WRITE_TOOLS
+        if options is not None:
+            safe_read_tools = {"Read", "Glob", "Grep", "LS", "NotebookRead", "WebFetch", "WebSearch"}
+            if options.tool_names is not None:
+                allowed_tools = list(options.tool_names)
+                if any(not tool or not tool.replace("_", "").isalnum() for tool in allowed_tools):
+                    raise ValueError("tool_names must contain exact tool names, not permission patterns")
+                if node.tools == ToolAccess.READ_ONLY and not set(allowed_tools) <= safe_read_tools:
+                    raise ValueError("Read-only Claude tool_names cannot include writing, delegation, or shell tools")
+            elif node.tools == ToolAccess.READ_ONLY:
+                allowed_tools = [tool for tool in allowed_tools if tool in safe_read_tools]
         if node.model_settings.web_search == "disabled":
             allowed_tools = [tool for tool in allowed_tools if tool not in {"WebFetch", "WebSearch"}]
         command.extend(["--tools", ",".join(allowed_tools)])
+        if options is not None:
+            command.extend(["--allowedTools", ",".join(allowed_tools)])
         if node.model_settings.max_turns:
             command.extend(["--max-turns", str(node.model_settings.max_turns)])
         if node.model_settings.reasoning_effort:
             command.extend(["--effort", node.model_settings.reasoning_effort])
         runtime_files: dict[str, str] = {}
-        if node.mcps:
+        if options and options.system_prompt is not None:
+            runtime_files["system-prompt.md"] = options.system_prompt
+            command.extend(["--append-system-prompt-file", self.target_path(paths, "system-prompt.md")])
+        if options and options.output_schema is not None:
+            command.extend(["--json-schema", json.dumps(options.output_schema)])
+        if node.mcps or (options and options.isolate_config):
             mcp_payload: dict[str, object] = {"mcpServers": {}}
             for mcp in node.mcps:
                 inner: dict[str, object] = {}
@@ -117,6 +138,7 @@ class ClaudeAdapter(AgentAdapter):
             cwd = self.target_path(paths)
         prepared = PreparedExecution(
             command=command,
+            stdin=prompt if options and options.prompt_via_stdin else None,
             env=env,
             cwd=cwd,
             trace_kind="claude",
