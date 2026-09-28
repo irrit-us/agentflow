@@ -37,6 +37,8 @@ class ClaudeAdapter(AgentAdapter):
     def prepare(self, node: NodeSpec, prompt: str, paths: ExecutionPaths) -> PreparedExecution:
         self.validate_node_features(node)
         options = node.cli_options
+        if options and options.external_sandbox:
+            raise ValueError("external_sandbox is a Codex-only CLI option")
         provider = self.provider_config(node.provider, node.agent)
         executable = node.executable or "claude"
         repo_instructions_ignored = node.repo_instructions_mode == RepoInstructionsMode.IGNORE
@@ -52,9 +54,16 @@ class ClaudeAdapter(AgentAdapter):
         if not (options and options.prompt_via_stdin):
             command.insert(2, prompt)
         if options and options.isolate_config:
-            command.extend(["--bare", "--setting-sources", "", "--strict-mcp-config", "--no-session-persistence"])
+            # --bare also enables SIMPLE mode: it removes requested tools and
+            # skips explicitly supplied policy hooks. Isolate configuration
+            # without changing the agent's tool or hook capabilities.
+            command.extend(["--setting-sources", "", "--strict-mcp-config", "--no-session-persistence",
+                            "--disable-slash-commands"])
         if repo_instructions_ignored:
-            command.extend(["--bare", "--add-dir", paths.target_workdir])
+            command.extend(["--add-dir", paths.target_workdir])
+        if options:
+            for root in options.readable_roots:
+                command.extend(["--add-dir", root])
         if node.model:
             command.extend(["--model", node.model])
         allowed_tools = _CLAUDE_READ_ONLY_TOOLS if node.tools == ToolAccess.READ_ONLY else _CLAUDE_READ_WRITE_TOOLS
@@ -68,7 +77,7 @@ class ClaudeAdapter(AgentAdapter):
                     raise ValueError("Read-only Claude tool_names cannot include writing, delegation, or shell tools")
             elif node.tools == ToolAccess.READ_ONLY:
                 allowed_tools = [tool for tool in allowed_tools if tool in safe_read_tools]
-        if node.model_settings.web_search == "disabled":
+        if node.model_settings.web_search == "disabled" or (options and options.network_access is False):
             allowed_tools = [tool for tool in allowed_tools if tool not in {"WebFetch", "WebSearch"}]
         command.extend(["--tools", ",".join(allowed_tools)])
         if options is not None:
@@ -110,6 +119,11 @@ class ClaudeAdapter(AgentAdapter):
             runtime_files[relative_path] = json.dumps(mcp_payload, ensure_ascii=False, indent=2)
             command.extend(["--mcp-config", self.target_path(paths, relative_path)])
         env = merge_env_layers(getattr(provider, "env", None), node.env)
+        if options and options.isolate_config:
+            env.update({"CLAUDE_CODE_SIMPLE": "0", "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+                        "CLAUDE_CODE_DISABLE_CLAUDE_MDS": "1"})
+        elif repo_instructions_ignored:
+            env["CLAUDE_CODE_DISABLE_CLAUDE_MDS"] = "1"
         if node.model_settings.max_output_tokens:
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(node.model_settings.max_output_tokens)
         is_docker = node.target.kind == "docker"

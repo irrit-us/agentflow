@@ -9,7 +9,7 @@ from agentflow.agents.base import AgentAdapter
 from agentflow.agents.secrets import wrap_secret_files
 from agentflow.env import merge_env_layers
 from agentflow.prepared import ExecutionPaths, PreparedExecution
-from agentflow.specs import NodeSpec, ProviderConfig, RepoInstructionsMode, ToolAccess
+from agentflow.specs import DockerTarget, NodeSpec, ProviderConfig, RepoInstructionsMode, ToolAccess
 
 
 class CodexAdapter(AgentAdapter):
@@ -37,10 +37,19 @@ class CodexAdapter(AgentAdapter):
         if node.model:
             lines.append(f"model = {self._format_toml_value(node.model)}")
         lines.append(f"approval_policy = {self._format_toml_value('never')}")
-        lines.append(f"sandbox_mode = {self._format_toml_value(sandbox_mode)}")
+        options = node.cli_options
+        if options and options.external_sandbox:
+            lines.append('sandbox_mode = "danger-full-access"')
+        elif options and (options.network_access is not None or options.readable_roots):
+            profile = {"extends": ":read-only" if sandbox_mode == "read-only" else ":workspace",
+                       "network": {"enabled": bool(options.network_access)},
+                       "filesystem": {root: "read" for root in options.readable_roots}}
+            lines.append('default_permissions = "agentflow_native"')
+            lines.append("permissions = " + self._format_toml_value({"agentflow_native": profile}))
+        else:
+            lines.append(f"sandbox_mode = {self._format_toml_value(sandbox_mode)}")
         settings = node.model_settings
         for key, value in {"model_context_window": settings.context_window,
-                           "model_max_output_tokens": settings.max_output_tokens,
                            "model_reasoning_effort": settings.reasoning_effort,
                            "web_search": settings.web_search}.items():
             if value is not None:
@@ -140,6 +149,18 @@ class CodexAdapter(AgentAdapter):
         options = node.cli_options
         if options is not None and options.tool_names is not None:
             raise ValueError("Codex does not support an exact tool_names allowlist")
+        if options and options.external_sandbox:
+            target = node.target
+            if not isinstance(target, DockerTarget) or target.privileged or target.mount_docker_daemon or target.dind:
+                raise ValueError("External sandbox requires an isolated Docker target")
+            if node.tools == ToolAccess.READ_ONLY and not target.workdir_read_only:
+                raise ValueError("External read-only sandbox requires a read-only Docker workspace")
+            if any(not mount.read_only for mount in target.mounts):
+                raise ValueError("External sandbox context mounts must be read-only")
+            if not set(options.readable_roots) <= {mount.target for mount in target.mounts}:
+                raise ValueError("External sandbox read roots must have explicit read-only Docker mounts")
+            if options.network_access is not None and options.network_access != (target.network_policy.mode != "none"):
+                raise ValueError("External sandbox network permission must match the Docker network policy")
         provider = self.provider_config(node.provider, node.agent)
         executable = node.executable or "codex"
         env = merge_env_layers(getattr(provider, "env", None), node.env)
@@ -154,9 +175,18 @@ class CodexAdapter(AgentAdapter):
             'approval_policy="never"',
             "-c",
             "suppress_unstable_features_warning=true",
-            "--sandbox",
-            sandbox,
         ]
+        external_sandbox = bool(options and options.external_sandbox)
+        permission_profile = bool(options and not external_sandbox and (options.network_access is not None or options.readable_roots))
+        if external_sandbox:
+            command.append("--dangerously-bypass-approvals-and-sandbox")
+        elif not permission_profile:
+            command.extend(["--sandbox", sandbox])
+        elif not options.isolate_config:
+            # Apply the same generated profile even without a scoped config home.
+            for key in ("default_permissions", "permissions"):
+                value = tomllib.loads(self._render_config(node, provider, sandbox))[key]
+                command.extend(["-c", f"{key}={self._format_toml_value(value)}"])
         if node.model and not provider:
             command.extend(["--model", node.model])
         if provider and not (options and options.isolate_config):
@@ -173,6 +203,8 @@ class CodexAdapter(AgentAdapter):
         prompt = self._maybe_prepend_wrapper(node, prompt)
         if options and options.system_prompt:
             prompt = options.system_prompt + self._WRAPPER_SEPARATOR + prompt
+        if node.model_settings.max_output_tokens is not None:
+            prompt += f"\nKeep the final response within approximately {node.model_settings.max_output_tokens} tokens. This is an advisory output budget."
         command.append("-" if options and options.prompt_via_stdin else prompt)
 
         runtime_files: dict[str, str] = {}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import signal
 from types import SimpleNamespace
@@ -64,6 +65,32 @@ def harness(tmp_path, monkeypatch):
 
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.skipif(os.name != "posix", reason="POSIX supervision")]
+
+
+@pytest.mark.parametrize("stream_name", ["stdout", "stderr"])
+async def test_large_native_event_preserves_json_line(harness, monkeypatch, stream_name):
+    h = harness
+    event = json.dumps({"type": "item.completed", "output": "x" * 100_000})
+    observed = []
+
+    async def launch(*args, **kwargs):
+        for name in ("stdout", "stderr"):
+            stream = asyncio.StreamReader(limit=kwargs["limit"])
+            stream.feed_data(((event + "\n") if name == stream_name else "").encode())
+            stream.feed_eof()
+            setattr(h.process, name, stream)
+        h.process.returncode = 0
+        h.exited.set()
+        return h.process
+
+    async def output(name, line):
+        observed.append((name, line))
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", launch)
+    result = await LocalRunner().execute(h.node, h.prepared, h.paths, output, lambda: False)
+    assert result.exit_code == 0
+    assert observed == [(stream_name, event)]
+    assert json.loads(observed[0][1])["output"] == "x" * 100_000
 
 
 async def test_cooperative_cancel_during_blocked_stdin(harness):

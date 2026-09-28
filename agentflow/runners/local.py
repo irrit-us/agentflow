@@ -16,6 +16,9 @@ from agentflow.utils import ensure_dir
 
 
 class LocalRunner(Runner):
+    # Native CLI JSONL events can contain whole tool results, exceeding asyncio's
+    # default 64 KiB line limit. Keep a finite event bound without splitting JSON.
+    _STREAM_LINE_LIMIT = 8 * 1024 * 1024
     _KNOWN_SHELL_EXECUTABLES = {
         "ash",
         "bash",
@@ -320,6 +323,7 @@ class LocalRunner(Runner):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.PIPE if prepared.stdin is not None else asyncio.subprocess.DEVNULL,
+            limit=self._STREAM_LINE_LIMIT,
             **({"start_new_session": True} if os.name == "posix" else {}),
         )
 

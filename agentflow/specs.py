@@ -1338,6 +1338,17 @@ class CLIOptions(BaseModel):
     output_schema: dict[str, Any] | None = None
     tool_names: list[str] | None = None
     isolate_config: bool = False
+    network_access: bool | None = None
+    external_sandbox: bool = False
+    readable_roots: list[str] = Field(default_factory=list)
+
+    @field_validator("readable_roots")
+    @classmethod
+    def validate_readable_roots(cls, values):
+        if len(values) != len(set(values)) or any(not value.startswith("/") or "\0" in value for value in values):
+            raise ValueError("readable_roots must be unique absolute target paths")
+        return values
+
     prompt_via_stdin: bool = True
 
 

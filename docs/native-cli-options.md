@@ -45,9 +45,13 @@ not a filesystem sandbox.
 With `isolate_config`, Codex uses `--ignore-user-config` and `--ephemeral`, while
 explicit model, provider and MCP settings are passed as configuration overrides.
 Local authentication and execution policy rules remain available; isolation does
-not add `--ignore-rules`. Claude uses `--bare`, empty setting sources, strict MCP
-configuration (an empty server map when none is configured), and no session
-persistence. Native managed policies may still apply. Configuration isolation
+not add `--ignore-rules`. Claude uses empty setting sources, strict MCP
+configuration (an empty server map when none is configured), disabled slash
+commands, and no session persistence. Its isolated environment disables automatic
+instruction-file and memory loading. It explicitly disables SIMPLE mode instead
+of using `--bare`, because bare mode removes search/web tools and skips supplied
+policy hooks in supported CLI versions. Explicit tools and hooks remain active.
+Native managed policies may still apply. Configuration isolation
 is not OS-level containment. `extra_args` remains a trusted operator escape
 hatch and must not be supplied by untrusted task content.
 
@@ -55,3 +59,43 @@ See the [Claude Code CLI reference](https://code.claude.com/docs/en/cli-referenc
 and [Codex non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).
 CLI installations must support the selected flags; tests use mocked executables
 and do not require model access.
+
+## Read context and network access
+
+`cli_options.readable_roots` accepts unique absolute target directory paths.
+`network_access` is optional and independent of filesystem write policy. With
+neither option supplied, legacy sandbox rendering remains unchanged.
+
+When either is supplied, Codex uses an `agentflow_native` named permissions
+profile extending `:read-only` or `:workspace`, adds read-only filesystem roots,
+and sets `network.enabled`. This requires a Codex installation supporting named
+permission profiles (locally verified with 0.156.1); unsupported versions fail
+rather than falling back to unrestricted access. Web search remains separately
+configured through `model_settings.web_search`.
+
+Claude adds each root with `--add-dir`. Setting `network_access=false` removes
+WebSearch and WebFetch from its selected tools; otherwise their availability
+follows the normal tool selection. Use native tool selection for Claude web
+research rather than Codex's `web_search="live"` model setting. Claude directory
+and tool settings are not an OS filesystem or network sandbox.
+
+## Docker as the Codex sandbox
+
+`cli_options.external_sandbox=true` is a Codex-only option for hosts where nested
+Codex user namespaces are unavailable. It is accepted only with an isolated
+DockerTarget: no privileged mode, Docker daemon mount or DinD; context mounts
+must be read-only, and read-only nodes require a read-only workspace. Every
+readable root must name an explicit Docker context mount, and an explicit network
+permission must match Docker's network policy.
+
+The adapter then selects `--dangerously-bypass-approvals-and-sandbox` inside that
+container and omits named Codex permission profiles. Docker owns filesystem and
+network isolation; this never enables the flag for a local target. Trusted
+application hooks still run. See the official
+[container sandbox guidance](https://learn.chatgpt.com/docs/agent-approvals-security).
+
+
+Codex 0.156.1 does not recognize `model_max_output_tokens`. AgentFlow therefore
+expresses `model_settings.max_output_tokens` as advisory final-response guidance
+for Codex rather than emitting that ineffective configuration key. Applications
+must not describe it as a hard provider token ceiling.

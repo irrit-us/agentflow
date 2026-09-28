@@ -263,7 +263,7 @@ def test_claude_adapter_uses_current_cli_flags(tmp_path):
     assert "--print" not in prepared.command
 
 
-def test_claude_adapter_can_ignore_repo_instructions_with_bare_runtime_cwd(tmp_path):
+def test_claude_adapter_can_ignore_repo_instructions_without_disabling_tools(tmp_path):
     node = NodeSpec.model_validate(
         {
             "id": "review",
@@ -275,7 +275,8 @@ def test_claude_adapter_can_ignore_repo_instructions_with_bare_runtime_cwd(tmp_p
 
     prepared = ClaudeAdapter().prepare(node, "Review", _paths(tmp_path))
 
-    assert "--bare" in prepared.command
+    assert "--bare" not in prepared.command
+    assert prepared.env['CLAUDE_CODE_DISABLE_CLAUDE_MDS'] == '1'
     assert "--add-dir" in prepared.command
     add_dir_index = prepared.command.index("--add-dir")
     assert prepared.command[add_dir_index + 1] == str(tmp_path)
