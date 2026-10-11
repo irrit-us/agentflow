@@ -489,6 +489,19 @@ def zcode(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     return _node(AgentKind.ZCODE, task_id=task_id, prompt=prompt, **kwargs)
 
 
+def alchemist(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
+    """Run the Audit Alchemist CLI (https://github.com/irrit-us/Audit-Alchemist).
+
+    Uses the ``alchemist agent`` workflow contract: one JSON request on stdin and
+    one JSON response on stdout. The node ``prompt`` becomes the audit
+    instruction; the source target defaults to the node workdir and can be
+    narrowed with ``env={"AGENTFLOW_ALCHEMIST_TARGET": "src/pkg"}``. A node
+    provider supplies the full endpoint URL, API key variable, and one of the
+    ``chat-completions``, ``responses``, or ``anthropic`` wire APIs.
+    """
+    return _node(AgentKind.ALCHEMIST, task_id=task_id, prompt=prompt, **kwargs)
+
+
 def claude(*, task_id: str, prompt: str, **kwargs: Any) -> NodeBuilder:
     return _node(AgentKind.CLAUDE, task_id=task_id, prompt=prompt, **kwargs)
 

@@ -20,7 +20,8 @@ and the Harbor Terminus 2 adapter are described in
 ## Components
 
 - **AgentFlow core** — DAG orchestration for Codex, Claude, Kimi, Kilo Code,
-  OpenCode, DeepSeek Harness, ZCode, and other external coding-agent CLIs.
+  OpenCode, DeepSeek Harness, ZCode, Audit Alchemist, and other external
+  coding-agent CLIs.
 - **AgentFlow Lite** — direct OpenAI-compatible HTTP, tool calling, YAML DAGs,
   optional Docker execution, and a read-only monitor.
 - **Paper architectures** — buildable graph declarations for 47 published

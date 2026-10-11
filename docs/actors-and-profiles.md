@@ -46,9 +46,11 @@ rejected before writing. Read-only permissions are not a same-user security boun
 validates requested features before producing `NodeSpec` fields. Call it during
 preflight, before provisioning resources. Profiles keep model/provider settings,
 MCP declarations, skills, extensions, secret references, and timeouts independent
-of workflow configuration. `BACKEND_CAPABILITIES` covers Codex, Claude, Pi, and
-Harbor Terminus 2. Pi and Terminus reject MCP declarations; Terminus also rejects
-read-only tool access and CLI arguments. Pi token limits require an explicit
+of workflow configuration. `BACKEND_CAPABILITIES` covers Codex, Claude, Pi,
+Audit Alchemist, and Harbor Terminus 2. Pi and Terminus reject MCP declarations;
+Terminus also rejects read-only tool access and CLI arguments. Audit Alchemist
+accepts stdio MCP servers and per-server timeouts but rejects streamable HTTP,
+extensions, and unsupported model settings. Pi token limits require an explicit
 custom provider and model. Unsupported settings and protocols raise errors.
 
 Trusted backend extensions can register their adapter in `AdapterRegistry` and
@@ -108,6 +110,29 @@ existence says nothing about the application's task outcome.
 
 Sources: [Harbor Terminus 2](https://www.harborframework.com/docs/agents/terminus-2),
 [Harbor 0.23.0](https://pypi.org/project/harbor/0.23.0/).
+
+## Audit Alchemist
+
+`alchemist` runs the Audit Alchemist CLI in its documented workflow mode:
+`alchemist agent` reads exactly one JSON request on stdin, writes exactly one
+JSON response on stdout, and keeps progress on stderr. The node prompt becomes
+the audit instruction and the source target defaults to the node workdir; narrow
+it with `env={"AGENTFLOW_ALCHEMIST_TARGET": "src/pkg"}`. Provider `base_url` is
+the full endpoint URL and `wire_api` must be `chat-completions`, `responses`, or
+`anthropic`; `api_key_env` names the credential variable (default
+`AUDIT_API_KEY`). Set `AGENTFLOW_ALCHEMIST_AUTH=codex` to reuse a Codex login and
+`AGENTFLOW_ALCHEMIST_CODEX_AUTH_FILE` to point at its `auth.json`.
+
+Tool, MCP, budget, and model settings are rendered into an isolated, versioned
+TOML node configuration passed with `--config`; the CLI never searches ambient
+paths. A read-only node exposes only the read tools (`read_file`, `list_files`,
+`search`, `load_skill`) while a read-write node keeps the full catalog. Stdio
+MCP servers are emitted with `env_from` references rather than literal secrets,
+and server names must be 1-48 ASCII letters, digits, `_`, or `-`. `tool_timeout_sec`
+bounds each `tools/call` and `startup_timeout_sec` bounds `initialize`/`tools/list`
+independently. Non-authentication `provider.headers` are forwarded as repeatable
+`--header NAME:VALUE` arguments for gateway routing or tenancy; authentication
+headers still require target-side secret references.
 
 ## Failure lifecycle
 

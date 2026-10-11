@@ -140,6 +140,30 @@ def test_capabilities_reject_incompatible_features_and_protocols():
         AgentProfile(name="invalid", agent="codex", provider={"headers": {"Authorization": "secret"}})
 
 
+def test_alchemist_capabilities_gate_unsupported_features():
+    with pytest.raises(ValueError, match="mcp:streamable_http"):
+        AgentProfile(
+            name="invalid",
+            agent="alchemist",
+            mcps=[{"name": "service", "transport": "streamable_http", "url": "https://service.invalid"}],
+        ).node_options()
+    with pytest.raises(ValueError, match="extensions"):
+        AgentProfile(name="invalid", agent="alchemist", extensions=["tool.ts"]).node_options()
+    with pytest.raises(ValueError, match="model settings"):
+        AgentProfile(name="invalid", agent="alchemist", model_settings={"context_window": 4096}).node_options()
+    with pytest.raises(ValueError, match="provider protocol"):
+        AgentProfile(name="invalid", agent="alchemist", provider={"wire_api": "messages"}).node_options()
+    supported = AgentProfile(
+        name="valid",
+        agent="alchemist",
+        provider={"name": "custom", "base_url": "https://provider.invalid/v1/chat/completions", "wire_api": "chat-completions"},
+        model_settings={"max_output_tokens": 1024, "reasoning_effort": "medium"},
+        mcps=[{"name": "service", "command": "mcp-server", "tool_timeout_sec": 30}],
+    )
+    options = supported.node_options()
+    assert options["model_settings"]["max_output_tokens"] == 1024
+
+
 def test_custom_backend_registry_round_trip(tmp_path):
     registry = AdapterRegistry()
     registry.register("example-backend", CodexAdapter())

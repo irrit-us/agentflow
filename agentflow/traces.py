@@ -600,6 +600,43 @@ class ZCodeTraceParser(BaseTraceParser):
         return [self.emit("event", event_type, _stringify(payload), payload)]
 
 
+@dataclass(slots=True)
+class AlchemistTraceParser(BaseTraceParser):
+    """Consume the single JSON report emitted by ``alchemist agent``.
+
+    The CLI pretty-prints one response object on stdout and keeps diagnostics on
+    stderr, so the parser accumulates lines until the document parses and keeps
+    the JSON as the node's final output while surfacing a findings summary.
+    """
+
+    document_lines: list[str] = field(default_factory=list)
+
+    def supports_raw_stdout_fallback(self) -> bool:
+        return False
+
+    def start_attempt(self, attempt: int) -> None:
+        BaseTraceParser.start_attempt(self, attempt)
+        self.document_lines.clear()
+
+    def feed(self, line: str) -> list[NormalizedTraceEvent]:
+        text = line.rstrip()
+        if not self.document_lines and not text.lstrip().startswith("{"):
+            self.remember(text)
+            return [self.emit("stdout", "stdout", text, line)] if text else []
+        if self.document_lines and text.lstrip().startswith("{"):
+            self.document_lines.clear()
+        self.document_lines.append(text)
+        document = "\n".join(self.document_lines)
+        payload = _json(document)
+        if not isinstance(payload, dict):
+            return []
+        self.document_lines.clear()
+        self.remember(document)
+        findings = payload.get("findings")
+        count = len(findings) if isinstance(findings, list) else 0
+        return [self.emit("result", "Findings", f"{count} finding(s)", payload)]
+
+
 def create_trace_parser(agent: AgentKind | str, node_id: str) -> BaseTraceParser:
     match agent:
         case AgentKind.CODEX:
@@ -620,4 +657,6 @@ def create_trace_parser(agent: AgentKind | str, node_id: str) -> BaseTraceParser
             return DeepSeekTraceParser(node_id=node_id, agent=agent)
         case AgentKind.ZCODE:
             return ZCodeTraceParser(node_id=node_id, agent=agent)
+        case AgentKind.ALCHEMIST:
+            return AlchemistTraceParser(node_id=node_id, agent=agent)
     return GenericTraceParser(node_id=node_id, agent=agent)

@@ -50,6 +50,7 @@ class AgentKind(StrEnum):
     KILO = "kilo"
     GOOSE = "goose"
     TERMINUS = "terminus"
+    ALCHEMIST = "alchemist"
     PYTHON = "python"
     SHELL = "shell"
     COMMAND = "command"
@@ -319,6 +320,24 @@ def resolve_provider(value: str | ProviderConfig | None, agent: str | AgentKind)
         return ProviderConfig(name=value)
 
     alias = value.strip().lower()
+    if resolved_agent == AgentKind.ALCHEMIST:
+        # Audit Alchemist's `--endpoint` is a full provider URL rather than a
+        # base URL, so the aliases carry the complete request path.
+        if alias == "openai":
+            return ProviderConfig(
+                name="openai",
+                base_url="https://api.openai.com/v1/chat/completions",
+                api_key_env="OPENAI_API_KEY",
+                wire_api="chat-completions",
+            )
+        if alias == "anthropic":
+            return ProviderConfig(
+                name="anthropic",
+                base_url="https://api.anthropic.com/v1/messages",
+                api_key_env="ANTHROPIC_API_KEY",
+                wire_api="anthropic",
+            )
+        return ProviderConfig(name=value)
     if alias == "openai" and resolved_agent in {
         AgentKind.CODEX,
         AgentKind.OPENCODE,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from agentflow.agents.base import AgentAdapter
+from agentflow.agents.alchemist import AlchemistAdapter
 from agentflow.agents.claude import ClaudeAdapter
 from agentflow.agents.codex import CodexAdapter
 from agentflow.agents.deepseek import DeepSeekAdapter
@@ -28,6 +29,7 @@ class AdapterRegistry:
             AgentKind.KILO: KiloAdapter(),
             AgentKind.GOOSE: GooseAdapter(),
             AgentKind.TERMINUS: TerminusAdapter(),
+            AgentKind.ALCHEMIST: AlchemistAdapter(),
             AgentKind.PYTHON: PythonAdapter(),
             AgentKind.SHELL: ShellAdapter(),
             AgentKind.COMMAND: CommandAdapter(),

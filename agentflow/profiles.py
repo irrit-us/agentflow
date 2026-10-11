@@ -24,6 +24,7 @@ BACKEND_CAPABILITIES: dict[str, BackendCapabilities] = {
     "codex": BackendCapabilities(targets=_ALL_TARGETS, capabilities=_COMMON | {"mcp:stdio", "mcp:streamable_http", "mcp:timeouts"}, model_settings={"context_window", "max_output_tokens", "reasoning_effort", "web_search"}, provider_protocols={"responses"}),
     "claude": BackendCapabilities(targets=_ALL_TARGETS, capabilities=_COMMON | {"mcp:stdio", "mcp:streamable_http"}, model_settings={"max_output_tokens", "reasoning_effort", "max_turns", "web_search"}, provider_protocols={"anthropic", "messages"}),
     "pi": BackendCapabilities(targets=_ALL_TARGETS, capabilities=_COMMON | {"extensions"}, model_settings={"context_window", "max_output_tokens", "reasoning_effort", "web_search"}, provider_protocols={"openai-completions", "openai-responses", "anthropic-messages", "google-generative-ai"}),
+    "alchemist": BackendCapabilities(targets=_ALL_TARGETS, capabilities=_COMMON | {"mcp:stdio", "mcp:timeouts"}, model_settings={"max_output_tokens", "reasoning_effort"}, provider_protocols={"chat-completions", "responses", "anthropic"}),
     "terminus": BackendCapabilities(capabilities=_COMMON - {"read_only"}, model_settings={"context_window", "max_output_tokens", "reasoning_effort", "temperature", "max_turns", "web_search"}, provider_protocols={"responses", "chat_completions", "anthropic", "messages"}),
 }
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import tomllib
 from pathlib import Path
 
 from agentflow.agents.claude import ClaudeAdapter
 from agentflow.agents.codex import CodexAdapter
+from agentflow.agents.alchemist import AlchemistAdapter
 from agentflow.agents.deepseek import DeepSeekAdapter
 from agentflow.agents.goose import GooseAdapter
 from agentflow.agents.kimi import KimiAdapter
@@ -16,6 +18,7 @@ from agentflow.agents.zcode import ZCodeAdapter
 from agentflow.agents.util import PythonAdapter, ShellAdapter
 from agentflow.prepared import ExecutionPaths
 from agentflow.specs import AgentKind, NodeSpec
+from agentflow.traces import create_trace_parser
 
 import pytest
 import yaml
@@ -1361,3 +1364,152 @@ def test_zcode_adapter_rejects_configuration_owned_by_zcode(tmp_path, field, val
 
     with pytest.raises(ValueError, match=message):
         ZCodeAdapter().prepare(node, "Run", _paths(tmp_path))
+
+
+def _alchemist_node(**overrides) -> NodeSpec:
+    payload = {
+        "id": "audit",
+        "agent": "alchemist",
+        "prompt": "Audit command execution.",
+        "model": "audit-model",
+        "provider": {
+            "name": "custom",
+            "base_url": "https://provider.test/v1/chat/completions",
+            "api_key_env": "AUDIT_API_KEY",
+            "wire_api": "chat-completions",
+        },
+        "tools": "read_write",
+    }
+    payload.update(overrides)
+    return NodeSpec.model_validate(payload)
+
+
+def test_alchemist_adapter_is_registered_by_default():
+    assert isinstance(AdapterRegistry().get(AgentKind.ALCHEMIST), AlchemistAdapter)
+
+
+def test_alchemist_adapter_builds_agent_protocol_command(tmp_path):
+    node = _alchemist_node(model_settings={"max_output_tokens": 2048, "reasoning_effort": "high"})
+
+    prepared = AlchemistAdapter().prepare(node, node.prompt, _paths(tmp_path))
+
+    assert prepared.command[0] == "alchemist"
+    assert "agent" in prepared.command
+    model_index = prepared.command.index("--model")
+    assert prepared.command[model_index + 1] == "audit-model"
+    endpoint_index = prepared.command.index("--endpoint")
+    assert prepared.command[endpoint_index + 1] == "https://provider.test/v1/chat/completions"
+    assert prepared.command[prepared.command.index("--timeout-ms") + 1] == "1800000"
+    assert prepared.command[prepared.command.index("--max-tokens") + 1] == "2048"
+    assert prepared.command[prepared.command.index("--reasoning-effort") + 1] == "high"
+    request = json.loads(prepared.stdin)
+    assert request == {
+        "schema_version": 1,
+        "case_id": "audit",
+        "target": ".",
+        "instruction": node.prompt,
+    }
+    assert prepared.cwd == str(tmp_path)
+    assert "--config" not in prepared.command
+
+
+def test_alchemist_adapter_forwards_custom_provider_headers(tmp_path):
+    node = _alchemist_node(
+        provider={
+            "name": "custom",
+            "base_url": "https://provider.test/v1/chat/completions",
+            "api_key_env": "AUDIT_API_KEY",
+            "wire_api": "chat-completions",
+            "headers": {"x-tenant": "team-a", "x-route": "eu-west"},
+        }
+    )
+
+    prepared = AlchemistAdapter().prepare(node, node.prompt, _paths(tmp_path))
+
+    forwarded = [
+        prepared.command[index + 1]
+        for index, value in enumerate(prepared.command)
+        if value == "--header"
+    ]
+    assert forwarded == ["x-tenant:team-a", "x-route:eu-west"]
+
+
+def test_alchemist_adapter_renders_read_only_tools_and_mcp_config(tmp_path):
+    node = _alchemist_node(
+        tools="read_only",
+        mcps=[
+            {
+                "name": "svc-one",
+                "transport": "stdio",
+                "command": "mcp-server",
+                "args": ["--stdio"],
+                "env": {"TOKEN": "literal"},
+                "startup_timeout_sec": 5,
+                "tool_timeout_sec": 12,
+            }
+        ],
+    )
+
+    prepared = AlchemistAdapter().prepare(node, node.prompt, _paths(tmp_path))
+
+    config = tomllib.loads(prepared.runtime_files["alchemist.toml"])
+    assert config["tools"]["enabled"] == ["read_file", "list_files", "search", "load_skill"]
+    server = config["mcp"]["svc-one"]
+    assert server["command"] == "mcp-server"
+    assert server["args"] == ["--stdio"]
+    assert server["env_from"] == {"TOKEN": "TOKEN"}
+    assert server["startup_timeout_ms"] == 5000
+    assert server["timeout_ms"] == 12000
+    assert prepared.env["TOKEN"] == "literal"
+    config_index = prepared.command.index("--config")
+    assert prepared.command[config_index + 1].endswith("alchemist.toml")
+
+
+def test_alchemist_adapter_selects_target_from_environment(tmp_path):
+    node = _alchemist_node(env={"AGENTFLOW_ALCHEMIST_TARGET": "src/pkg"})
+
+    prepared = AlchemistAdapter().prepare(node, node.prompt, _paths(tmp_path))
+
+    assert json.loads(prepared.stdin)["target"] == "src/pkg"
+    assert "AGENTFLOW_ALCHEMIST_TARGET" not in prepared.env
+
+
+def test_alchemist_adapter_requires_full_endpoint_for_api_key(tmp_path):
+    node = _alchemist_node(provider={"name": "custom"})
+
+    with pytest.raises(ValueError, match="api-key auth requires a provider"):
+        AlchemistAdapter().prepare(node, node.prompt, _paths(tmp_path))
+
+
+def test_alchemist_adapter_rejects_dotted_mcp_server_names(tmp_path):
+    node = _alchemist_node(mcps=[{"name": "service.with.dot", "transport": "stdio", "command": "mcp-server"}])
+
+    with pytest.raises(ValueError, match="ASCII letters"):
+        AlchemistAdapter().prepare(node, node.prompt, _paths(tmp_path))
+
+
+def test_alchemist_adapter_supports_codex_auth_reuse(tmp_path):
+    node = _alchemist_node(
+        env={
+            "AGENTFLOW_ALCHEMIST_AUTH": "codex",
+            "AGENTFLOW_ALCHEMIST_CODEX_AUTH_FILE": "/run/secrets/auth.json",
+        },
+        provider={"name": "codex", "wire_api": "responses"},
+    )
+
+    prepared = AlchemistAdapter().prepare(node, node.prompt, _paths(tmp_path))
+
+    assert prepared.command[prepared.command.index("--auth") + 1] == "codex"
+    assert prepared.command[prepared.command.index("--codex-auth-file") + 1] == "/run/secrets/auth.json"
+    assert "--api-key-env" not in prepared.command
+    assert "AGENTFLOW_ALCHEMIST_AUTH" not in prepared.env
+
+
+def test_alchemist_trace_parser_keeps_json_and_summarizes_findings():
+    parser = create_trace_parser(AgentKind.ALCHEMIST, "audit")
+    document = json.dumps({"schema_version": 1, "findings": [{"cwe": "CWE-78"}]})
+
+    events = parser.feed(document)
+
+    assert events[0].kind == "result"
+    assert json.loads(parser.finalize())["findings"][0]["cwe"] == "CWE-78"
